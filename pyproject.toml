@@ -1,0 +1,27 @@
+[project]
+name = "alphaforge"
+version = "0.0.1"
+description = "The research OS for emerging quant managers — an honest backtester that won't let you lie to yourself."
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+    "numpy>=1.26",
+    "pandas>=2.1",
+    "scipy>=1.11",
+]
+
+[project.optional-dependencies]
+data = ["yfinance>=0.2"]
+llm = ["anthropic>=0.40", "pydantic>=2"]
+dev = ["pytest>=7"]
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+include = ["research*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q"
