@@ -78,6 +78,9 @@ def walk_forward(
     dsr = metrics.deflated_sharpe_ratio(stitched, n_trials=n_splits)
     return {
         "n_splits": n_splits,
+        # the first window is the warm-up (signals need history), so there are
+        # n_splits-1 genuinely out-of-sample folds — reported honestly here.
+        "n_oos_folds": len(fold_sharpes),
         "fold_oos_sharpes": [round(float(s), 3) for s in fold_sharpes],
         "mean_oos_sharpe": round(float(np.nanmean(fold_sharpes)), 3),
         "stitched_oos_sharpe": round(metrics.annualised_sharpe(stitched, periods_per_year), 3),

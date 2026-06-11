@@ -27,16 +27,26 @@ and fat-tail / non-normality reporting (`research/stats_guards.py`).
 ## Quickstart
 
 ```bash
-pip install -e .            # numpy, pandas, scipy
+pip install -e .[api,app,dev]     # engine + FastAPI + Streamlit
+pytest                            # full suite incl. the no-look-ahead proof
+
+# Browser workflow (Phase 1): pick universe -> factor -> honest backtest
+uvicorn api.main:app --port 8000          # terminal 1 — API (http://127.0.0.1:8000/docs)
+streamlit run app/Home.py                 # terminal 2 — UI  (http://localhost:8501)
+# or on Windows: scripts/run_app.ps1 starts both
+
+# CLI demos
 python examples/demo_momentum.py            # offline, synthetic, no keys
 python examples/demo_momentum.py --provider yfinance   # real tickers (free, needs internet)
-pytest                       # 20 tests, incl. the no-look-ahead proof
+python examples/demo_quantamental.py        # text -> LLM-style signal -> backtest
 ```
 
-The demo runs a 12-1 long/short momentum strategy end-to-end and prints an honest
+The workflow runs a long/short factor strategy end-to-end and shows an honest
 scorecard, an out-of-sample / walk-forward overfit verdict, and the risk guards. On
-synthetic data the strategy *correctly fails* the Deflated-Sharpe haircut — which is the
-whole point.
+synthetic data the momentum strategy *correctly fails* the Deflated-Sharpe haircut —
+which is the whole point. The Streamlit page talks to the API when it's up and falls
+back to in-process execution otherwise; both paths share `api/service.py`, so the
+numbers are identical by construction (and tested to be).
 
 ## Layout
 
@@ -49,8 +59,15 @@ research/
   walkforward.py  # in-sample vs out-of-sample, walk-forward folds, overfit flag
   stats_guards.py # base-rate, Simpson, look-ahead, fat-tail guards (Blitzstein lessons)
   signals_llm.py  # Module A: validated, bounded, source-cited LLM signal extraction
-tests/            # pytest — the research engine must be well-tested
+  quantamental.py # text -> point-in-time signal panel (offline + cached-Claude extractors)
+api/
+  service.py      # ONE source of truth for the browser workflow (validation + orchestration)
+  main.py         # thin FastAPI app: GET /health, POST /backtest
+app/
+  Home.py         # Streamlit page (API-backed with in-process fallback)
+tests/            # pytest — engine + API contract + Streamlit AppTest UI tests
 examples/         # runnable demos
+scripts/          # run_app.ps1 — start API + UI on Windows
 docs/             # distilled references (Edwards & Magee TA, Blitzstein probability)
 ```
 
@@ -62,10 +79,13 @@ docs/             # distilled references (Edwards & Magee TA, Blitzstein probabi
 
 ## Status
 
-Phase 0/1 research engine: **working and tested.** Not investment advice; research
-software only. Synthetic results are an engine smoke-test, never evidence of an edge.
+Phase 1 in progress: research engine **working and tested**; quantamental (text → signal)
+pipeline live with a cached Claude extractor; **browser workflow live** (FastAPI + Streamlit).
+Not investment advice; research software only. Synthetic results are an engine smoke-test,
+never evidence of an edge. Free Yahoo data is survivorship-biased — the UI says so.
 
 ## Next
 
-API (FastAPI) over `research/`, a Streamlit page in front, point-in-time fundamental data,
-a factor library, and cost-tested LLM signals. See `CLAUDE.md` for the full roadmap.
+Accounts + billing, point-in-time fundamental data, a broader factor library, saved
+reproducible workspaces, and cost-metered LLM signals at scale. See `CLAUDE.md` for the
+full roadmap.
