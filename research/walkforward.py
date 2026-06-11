@@ -37,13 +37,17 @@ def split_backtest(
     oos_psr = metrics.probabilistic_sharpe_ratio(oos.returns, 0.0)
     degradation = is_sr - oos_sr
 
+    # Two DISTINCT failure modes, kept separate so the verdict isn't misleading:
+    #   overfit_warning  = the strategy decayed from in-sample to out-of-sample.
+    #   oos_significant  = the out-of-sample record itself clears the PSR bar.
+    # A signal can hold up OOS (no overfit) yet still be too short to be significant.
     return {
         "in_sample_sharpe": round(is_sr, 3),
         "out_sample_sharpe": round(oos_sr, 3),
         "degradation": round(degradation, 3),
         "out_sample_psr": round(oos_psr, 3) if not np.isnan(oos_psr) else None,
-        "overfit_warning": bool(degradation > degradation_threshold
-                                or (not np.isnan(oos_psr) and oos_psr < 0.95)),
+        "overfit_warning": bool(degradation > degradation_threshold),
+        "oos_significant": bool((not np.isnan(oos_psr)) and oos_psr >= 0.95),
     }
 
 

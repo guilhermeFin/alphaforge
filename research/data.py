@@ -129,3 +129,86 @@ def get_panel(
     if provider in ("yfinance", "yahoo"):
         return _yf_close_panel(symbols, start, end)
     raise ValueError(f"unknown provider: {provider!r}")
+
+
+@dataclass
+class World:
+    """A synthetic world for testing quantamental pipelines end-to-end.
+
+    Prices are driven by a *latent* per-name fundamental state ``quality`` that is
+    known at each date and drives the NEXT day's drift. ``events`` are points in
+    time where that state would be 'disclosed' (e.g. an earnings call), carrying
+    the ground-truth latent sentiment. Text is generated from those events
+    elsewhere (research/quantamental.py); the backtester only ever sees a signal
+    *extracted from text*, never the latent state — so a strategy that works is a
+    genuine, point-in-time-correct predictive signal, not a leak.
+    """
+    close: pd.DataFrame
+    volume: pd.DataFrame
+    quality: pd.DataFrame   # latent fundamental state (ground truth), dates x symbols
+    events: pd.DataFrame    # columns: symbol, date, latent_sentiment
+    regime: pd.Series | None = None
+
+    @property
+    def symbols(self) -> list[str]:
+        return list(self.close.columns)
+
+
+def make_synthetic_world(
+    symbols: list[str],
+    periods: int = 1512,
+    start: str = "2015-01-02",
+    seed: int = 0,
+    n_events_per_symbol: int = 12,
+    quality_persistence: float = 0.985,
+    quality_to_drift: float = 0.0006,
+    fat_tails: bool = True,
+    t_df: int = 4,
+) -> World:
+    """Coupled price + latent-fundamental generator (see World)."""
+    rng = np.random.default_rng(seed)
+    dates = pd.bdate_range(start=start, periods=periods)
+    n, T = len(symbols), periods
+
+    # latent fundamental quality: stationary AR(1) per name (unit variance)
+    rho = quality_persistence
+    q = np.empty((T, n))
+    q[0] = rng.standard_normal(n)
+    shock = rng.standard_normal((T, n))
+    for t in range(1, T):
+        q[t] = rho * q[t - 1] + np.sqrt(1.0 - rho ** 2) * shock[t]
+
+    # market factor with a 2-state regime
+    P = np.array([[0.95, 0.05], [0.02, 0.98]])
+    states = np.empty(T, dtype=int)
+    states[0] = 1
+    u = rng.random(T)
+    for t in range(1, T):
+        states[t] = 1 if u[t] < P[states[t - 1], 1] else 0
+    market = np.where(states == 1, 0.0005, -0.0009) + \
+        np.where(states == 1, 0.008, 0.020) * _innovations(rng, T, fat_tails, t_df)
+
+    betas = rng.uniform(0.6, 1.4, n)
+    idio_sd = rng.uniform(0.15, 0.45, n) / np.sqrt(TRADING_DAYS) * 0.7
+    q_lag = np.vstack([q[0:1], q[:-1]])  # yesterday's quality drives today's drift -> no same-day leak
+
+    rets = np.empty((T, n))
+    for j in range(n):
+        rets[:, j] = betas[j] * market + quality_to_drift * q_lag[:, j] + idio_sd[j] * _innovations(rng, T, fat_tails, t_df)
+
+    close = pd.DataFrame(100.0 * np.cumprod(1.0 + rets, axis=0), index=dates, columns=symbols)
+    volume = pd.DataFrame(rng.uniform(5e5, 5e6, n) * np.exp(rng.normal(0, 0.2, (T, n))),
+                          index=dates, columns=symbols).round()
+    quality = pd.DataFrame(q, index=dates, columns=symbols)
+
+    warm = 10
+    rows = []
+    cand = np.arange(warm, T - 5)
+    for j, sym in enumerate(symbols):
+        picks = np.sort(rng.choice(cand, size=min(n_events_per_symbol, cand.size), replace=False))
+        for d in picks:
+            rows.append((sym, dates[d], float(np.tanh(q[d, j]))))  # disclosed sentiment ~ current quality
+    events = pd.DataFrame(rows, columns=["symbol", "date", "latent_sentiment"]).sort_values("date").reset_index(drop=True)
+
+    return World(close=close, volume=volume, quality=quality, events=events,
+                 regime=pd.Series(states, index=dates, name="regime"))
