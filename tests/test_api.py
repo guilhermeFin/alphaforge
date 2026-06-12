@@ -129,3 +129,13 @@ def test_fundamental_factor_rejects_yfinance():
     r = client.post("/backtest", json=_small_req(factor="quality", provider="yfinance",
                                                  symbols=["AAPL", "MSFT"]))
     assert r.status_code in (400, 422)
+
+
+def test_response_includes_signal_quality():
+    body = client.post("/backtest", json=_small_req(factor="quality", periods=1000)).json()
+    sq = body["signal_quality"]
+    for k in ("mean_ic", "ic_tstat", "ic_ir", "ic_decay", "coverage", "rank_autocorr", "significant"):
+        assert k in sq
+    # the synthetic world plants a real predictive quality signal -> IC must be significant
+    assert sq["significant"] is True
+    assert sq["mean_ic"] > 0

@@ -199,6 +199,23 @@ with c:
               else "🔴 FAT TAILS — Gaussian VaR understates risk"))
     st.caption(tails.get("verdict", ""))
 
+sigq = res.get("signal_quality") or {}
+if sigq:
+    st.subheader("Is the signal itself predictive? (Information Coefficient)")
+    s1, s2, s3, s4 = st.columns(4)
+    s1.metric("Mean IC", fmt(sigq.get("mean_ic"), ".4f"))
+    s2.metric("IC t-stat", fmt(sigq.get("ic_tstat"), ".2f"))
+    s3.metric("IC hit-rate", fmt(sigq.get("ic_hit_rate"), ".0%"))
+    s4.metric("Signal autocorr", fmt(sigq.get("rank_autocorr"), ".2f"))
+    st.write(("🟢 The signal carries statistically significant predictive information (|t| > 2)"
+              if sigq.get("significant") else
+              "🔴 The signal is NOT statistically predictive — a good backtest here would be luck"))
+    decay = sigq.get("ic_decay") or {}
+    if decay:
+        st.write("IC by horizon: " + " · ".join(f"{k}d = {fmt(v, '+.3f')}" for k, v in decay.items()))
+    st.caption("IC = cross-sectional rank correlation between the signal today and the return that "
+               "follows it. A credible backtest should rest on a signal with a real, significant IC.")
+
 with st.expander("Full scorecard"):
     st.dataframe(pd.DataFrame([card]).T.rename(columns={0: "value"}), use_container_width=True)
 

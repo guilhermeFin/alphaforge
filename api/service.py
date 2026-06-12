@@ -15,7 +15,7 @@ from typing import Any
 import numpy as np
 import pandas as pd
 
-from research import data, factors, fundamentals, stats_guards
+from research import data, factors, fundamentals, signal_quality, stats_guards
 from research.backtest import backtest
 from research.walkforward import split_backtest, walk_forward
 
@@ -211,6 +211,7 @@ def run_backtest_workflow(req: dict) -> dict:
     weights = factors.long_short_weights(score, gross=p["gross"])
     res = backtest(close, weights, cost_bps=p["cost_bps"])
 
+    sigq = signal_quality.compact_scorecard(score, close)  # is the SIGNAL itself predictive?
     scorecard = res.summary(n_trials=p["n_trials"])
     oos = split_backtest(close, weights, split=0.7, cost_bps=p["cost_bps"])
     try:
@@ -254,6 +255,7 @@ def run_backtest_workflow(req: dict) -> dict:
         "verdict": verdict,
         "verdict_basis": basis,
         "scorecard": scorecard,
+        "signal_quality": sigq,
         "out_of_sample": oos,
         "walk_forward": wf,
         "fat_tails": tails,

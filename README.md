@@ -59,6 +59,7 @@ research/
   metrics.py      # Sharpe/Sortino/Calmar/drawdown + Probabilistic & Deflated Sharpe + JB
   walkforward.py  # in-sample vs out-of-sample, walk-forward folds, overfit flag
   stats_guards.py # base-rate, Simpson, look-ahead, fat-tail guards (Blitzstein lessons)
+  signal_quality.py # IC / IC-decay / out-of-sample IC / quantiles / re-run stability — judge the SIGNAL
   signals_llm.py  # Module A: validated, bounded, source-cited LLM signal extraction
   quantamental.py # text -> point-in-time signal panel (offline + cached-Claude extractors)
 api/
