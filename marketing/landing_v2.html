@@ -1,0 +1,273 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>AlphaForge — the research OS for emerging quant managers</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400..620&display=swap" rel="stylesheet">
+<style>
+  :root{
+    --bg:#0A0B0D; --panel:#0F1011; --panel2:#131417;
+    --hair:rgba(255,255,255,.07); --hair2:rgba(255,255,255,.10);
+    --t1:#F7F8F8; --t2:#D0D6E0; --t3:#8A8F98;
+    --accent:#5E6AD2; --accent-h:#6E7AE6;
+    --sans:'Inter',-apple-system,'Segoe UI',system-ui,sans-serif;
+  }
+  *{box-sizing:border-box;margin:0;padding:0}
+  html{scroll-behavior:smooth}
+  body{font-family:var(--sans);background:var(--bg);color:var(--t1);line-height:1.5;font-weight:450;-webkit-font-smoothing:antialiased}
+  .wrap{max-width:1080px;margin:0 auto;padding:0 28px}
+  a{color:inherit;text-decoration:none}
+  .num{font-variant-numeric:tabular-nums}
+  .eyebrow{font-size:13px;letter-spacing:.08em;text-transform:uppercase;color:var(--t3);font-weight:500}
+  h1{font-size:clamp(40px,6vw,68px);line-height:1.05;font-weight:580;letter-spacing:-.022em}
+  h2{font-size:38px;line-height:1.12;font-weight:580;letter-spacing:-.022em}
+  h3{font-size:17px;font-weight:500}
+  section{padding:104px 0}
+  /* nav */
+  nav{position:sticky;top:0;z-index:50;height:64px;backdrop-filter:blur(12px);background:rgba(10,11,13,.75);border-bottom:1px solid transparent;transition:border-color .2s}
+  nav.scrolled{border-bottom-color:var(--hair)}
+  .navrow{display:flex;align-items:center;justify-content:space-between;height:64px}
+  .logo{display:flex;align-items:center;gap:9px;font-weight:500;font-size:15.5px}
+  .mark{width:22px;height:22px;border:1.5px solid var(--t1);border-radius:6px;display:grid;place-items:center;font-size:12px;font-weight:500}
+  .navlinks{display:flex;gap:28px;font-size:14px;color:var(--t3)}
+  .navlinks a:hover{color:var(--t1)}
+  .navright{display:flex;gap:10px;align-items:center}
+  .btn{display:inline-flex;align-items:center;justify-content:center;gap:8px;font-size:14.5px;font-weight:500;padding:10px 18px;border-radius:6px;cursor:pointer;border:1px solid var(--hair2);color:var(--t2);background:transparent;transition:all .15s cubic-bezier(.25,.46,.45,.94)}
+  .btn:hover{border-color:rgba(255,255,255,.2);color:var(--t1)}
+  .btn-primary{background:var(--accent);border-color:var(--accent);color:#fff}
+  .btn-primary:hover{background:var(--accent-h);border-color:var(--accent-h);color:#fff}
+  .btn-ghost-sm{border:none;color:var(--t3);padding:10px 8px}
+  /* hero */
+  .hero{padding:118px 0 0;text-align:center}
+  .hero .pill{display:inline-flex;align-items:center;gap:8px;font-size:13px;color:var(--t3);border:1px solid var(--hair);border-radius:999px;padding:5px 14px;margin-bottom:28px}
+  .hero .pill .dotg{width:6px;height:6px;border-radius:50%;background:#4ade80}
+  .hero h1{max-width:720px;margin:0 auto}
+  .hero .sub{font-size:19px;color:var(--t2);max-width:640px;margin:24px auto 32px;line-height:1.55}
+  .ctas{display:flex;gap:12px;justify-content:center;flex-wrap:wrap}
+  .micro{margin-top:22px;font-size:13px;color:var(--t3);line-height:1.9}
+  .micro .sep{opacity:.5;margin:0 8px}
+  /* image slots */
+  .slot{position:relative;background:var(--panel);border:1px solid var(--hair);display:flex;flex-direction:column;align-items:center;justify-content:center;gap:8px;overflow:hidden}
+  .slot::before{content:"";position:absolute;inset:10px;border:1px dashed rgba(255,255,255,.12);border-radius:8px;pointer-events:none}
+  .slot .sname{font-size:13px;font-weight:500;color:var(--t2);letter-spacing:.02em}
+  .slot .smeta{font-size:12px;color:var(--t3)}
+  .slot .shint{font-size:12px;color:var(--t3);max-width:46ch;text-align:center;padding:0 18px;opacity:.8}
+  /* hero canvas */
+  .canvas-zone{position:relative;margin-top:64px}
+  .canvas-zone .glow{position:absolute;left:50%;top:-8%;transform:translateX(-50%);width:760px;height:420px;background:radial-gradient(closest-side,rgba(94,106,210,.16),transparent 70%);filter:blur(40px);pointer-events:none}
+  .hero-canvas{aspect-ratio:16/10;border-radius:16px;position:relative;z-index:1}
+  /* proof bar */
+  .proof{padding:44px 0;border-bottom:1px solid var(--hair)}
+  .proofrow{display:flex;justify-content:center;gap:54px;flex-wrap:wrap;color:var(--t3);font-size:14px}
+  .proofrow .it{display:flex;align-items:center;gap:9px;opacity:.75}
+  .proofrow .tick{color:var(--t3);font-size:12px}
+  .proofcap{text-align:center;font-size:12px;color:var(--t3);opacity:.6;margin-top:16px}
+  /* specimen gallery */
+  .gallery-head{max-width:640px}
+  .gallery-head p{color:var(--t2);font-size:16.5px;margin-top:14px}
+  .specimens{display:grid;grid-template-columns:0.9fr 1.4fr 1.05fr;gap:16px;margin-top:44px;align-items:start}
+  .specimen .slot{border-radius:12px;padding:0}
+  .specimen .cap{font-size:13px;color:var(--t3);margin-top:10px}
+  .sp1{aspect-ratio:4/5;border-radius:12px}
+  .sp2{aspect-ratio:16/10;border-radius:12px}
+  .sp3{aspect-ratio:4/3;border-radius:12px}
+  /* diagnosis */
+  .diag{border-top:1px solid var(--hair);border-bottom:1px solid var(--hair);background:var(--panel)}
+  .diag h2{max-width:620px}
+  .diag .lead{color:var(--t2);font-size:16.5px;max-width:640px;margin-top:14px}
+  .cols3{display:grid;grid-template-columns:repeat(3,1fr);gap:28px;margin-top:46px}
+  .cols3 h3{margin-bottom:8px}
+  .cols3 p{font-size:14.5px;color:var(--t3)}
+  .exhibit{aspect-ratio:21/9;border-radius:12px;margin-top:46px}
+  /* feature rows */
+  .frow{display:grid;grid-template-columns:1fr 1fr;gap:56px;align-items:center;padding:58px 0}
+  .frow .txt h2{font-size:32px}
+  .frow .txt p{color:var(--t2);font-size:16px;margin-top:14px;max-width:44ch}
+  .frow .media .slot{aspect-ratio:4/3;border-radius:12px}
+  /* numbers band */
+  .numbers{border-top:1px solid var(--hair)}
+  .nb{display:grid;grid-template-columns:repeat(3,1fr);gap:18px;margin-top:8px}
+  .nb .stat .v{font-size:60px;font-weight:580;letter-spacing:-.022em}
+  .nb .stat .l{font-size:13px;letter-spacing:.08em;text-transform:uppercase;color:var(--t3);margin-top:8px}
+  .method{font-size:13px;color:var(--t3);margin-top:28px}
+  .method a{color:var(--accent)}
+  /* audited strip */
+  .audit{background:var(--panel);border-top:1px solid var(--hair);border-bottom:1px solid var(--hair)}
+  .audit4{display:grid;grid-template-columns:repeat(4,1fr);gap:14px;margin-top:38px}
+  .acard{border:1px solid var(--hair);border-radius:8px;padding:18px;background:var(--bg)}
+  .acard h3{font-size:14.5px}
+  .acard p{font-size:13px;color:var(--t3);margin-top:6px}
+  /* closing */
+  .closing{position:relative;text-align:center;padding:128px 0;overflow:hidden}
+  .closing .glow{position:absolute;left:50%;top:50%;transform:translate(-50%,-50%);width:680px;height:380px;background:radial-gradient(closest-side,rgba(94,106,210,.14),transparent 70%);filter:blur(40px);pointer-events:none}
+  .closing h2{font-size:44px;position:relative}
+  .closing p{color:var(--t3);font-size:14px;margin-top:24px;position:relative}
+  .closing .ctas{margin-top:30px;position:relative}
+  footer{border-top:1px solid var(--hair);padding:44px 0 56px;color:var(--t3);font-size:13.5px;line-height:1.7}
+  footer .frow2{display:flex;justify-content:space-between;gap:40px;flex-wrap:wrap}
+  footer .links{display:flex;gap:24px}
+  footer .links a:hover{color:var(--t1)}
+  @media(max-width:880px){
+    section{padding:72px 0}
+    .navlinks{display:none}
+    .specimens,.cols3,.audit4,.nb{grid-template-columns:1fr}
+    .frow{grid-template-columns:1fr;gap:26px}
+    .frow.rev .media{order:-1}
+    h2{font-size:30px}
+  }
+</style>
+</head>
+<body>
+
+<nav id="nav"><div class="wrap navrow">
+  <div class="logo"><span class="mark">A</span>AlphaForge</div>
+  <div class="navlinks"><a href="#specimens">Product</a><a href="#diagnosis">Methodology</a><a href="#numbers">Rigor</a><a>Docs</a></div>
+  <div class="navright"><a class="btn btn-ghost-sm">Sign in</a><a class="btn btn-primary">Start free</a></div>
+</div></nav>
+
+<header class="wrap hero">
+  <div class="pill"><span class="dotg"></span>Open beta · v0.1</div>
+  <h1>The research OS for emerging quant managers</h1>
+  <p class="sub">Backtest, stress-test, and validate strategies with deflated Sharpe, overfitting probability, and point-in-time data — on every run.</p>
+  <div class="ctas">
+    <a class="btn btn-primary">Run your first honest backtest</a>
+    <a class="btn">See a sample verdict</a>
+  </div>
+  <p class="micro num">point-in-time data<span class="sep">·</span>deterministic seeds<span class="sep">·</span>costs on every trade<br>Research software, not investment advice.</p>
+
+  <div class="canvas-zone">
+    <div class="glow"></div>
+    <div class="slot hero-canvas">
+      <div class="sname">SLOT A — hero_product_canvas</div>
+      <div class="smeta num">16:10 · export 2160×1350</div>
+      <div class="shint">Your one hero visual: a full-fidelity shot of the real workspace — a completed run with verdict, equity curve, and stats. Flat, straight-on. No browser chrome, no tilt.</div>
+    </div>
+  </div>
+</header>
+
+<div class="proof"><div class="wrap">
+  <div class="proofrow num">
+    <span class="it"><span class="tick">●</span>Deflated Sharpe on every run</span>
+    <span class="it"><span class="tick">●</span>Overfitting probability by default</span>
+    <span class="it"><span class="tick">●</span>50/50 engine tests passing*</span>
+  </div>
+  <div class="proofcap">*Verified in the public test suite. Integrations row replaces this bar as data vendors come online.</div>
+</div></div>
+
+<section id="specimens"><div class="wrap">
+  <div class="gallery-head">
+    <div class="eyebrow">The product</div>
+    <h2 style="margin-top:12px">The backtest that won't let you lie to yourself.</h2>
+    <p>Every run ends in a judgment — with the methodology that produced it.</p>
+  </div>
+  <div class="specimens">
+    <div class="specimen"><div class="slot sp1">
+      <div class="sname">SLOT B1 — verdict_card_specimen</div><div class="smeta num">4:5</div>
+      <div class="shint">The signature verdict card: pass/fail with reasons.</div>
+    </div><div class="cap">Verdict card — every run ends in a judgment</div></div>
+    <div class="specimen"><div class="slot sp2">
+      <div class="sname">SLOT B2 — tearsheet_specimen</div><div class="smeta num">16:10</div>
+      <div class="shint">Equity-curve tearsheet with drawdown strip and tabular stats.</div>
+    </div><div class="cap">Equity-curve tearsheet</div></div>
+    <div class="specimen"><div class="slot sp3">
+      <div class="sname">SLOT B3 — dsr_pbo_specimen</div><div class="smeta num">4:3</div>
+      <div class="shint">The deflated-Sharpe &amp; overfitting panel — the artifact no competitor screenshots.</div>
+    </div><div class="cap">Deflated Sharpe &amp; PBO — computed on every run</div></div>
+  </div>
+</div></section>
+
+<section id="diagnosis" class="diag"><div class="wrap">
+  <div class="eyebrow">Why backtests flatter</div>
+  <h2 style="margin-top:12px">Most backtests are optimistic by construction.</h2>
+  <p class="lead">Your backtest is probably lying to you — not because you're careless, but because the standard workflow is built to flatter. Three biases do most of the damage:</p>
+  <div class="cols3">
+    <div><h3>Overfitting</h3><p>Try fifty variations, keep the best — that's luck wearing a lab coat. AlphaForge deflates every Sharpe by the number of trials you declare.</p></div>
+    <div><h3>Look-ahead &amp; survivorship</h3><p>Information leaks backwards; dead tickers vanish. Point-in-time data and a truncation-proof guarantee the past never moves.</p></div>
+    <div><h3>Multiple-testing bias</h3><p>A 97% "significant" result can be noise once you account for the search. Walk-forward and out-of-sample verdicts run by default.</p></div>
+  </div>
+  <div class="slot exhibit">
+    <div class="sname">SLOT C — overfit_diff_band</div><div class="smeta num">21:9</div>
+    <div class="shint">Court-exhibit strip: the same strategy's naive Sharpe vs deflated Sharpe, side by side.</div>
+  </div>
+</div></section>
+
+<section><div class="wrap">
+  <div class="frow">
+    <div class="txt">
+      <div class="eyebrow">Validation</div>
+      <h2 style="margin-top:10px">Walk-forward, by default</h2>
+      <p>Anchored folds, stitched out-of-sample records, and a verdict that treats every fold as one of your trials. In-sample brilliance that dies out-of-sample gets flagged — loudly, every time.</p>
+    </div>
+    <div class="media"><div class="slot">
+      <div class="sname">SLOT D1 — walkforward_feature_crop</div><div class="smeta num">4:3</div>
+      <div class="shint">Tight crop of one meaningful region — never a shrunken dashboard.</div>
+    </div></div>
+  </div>
+  <div class="frow rev">
+    <div class="media"><div class="slot">
+      <div class="sname">SLOT D2 — signal_extraction_crop</div><div class="smeta num">4:3</div>
+      <div class="shint">AI-extracted numeric signals with provenance — bounded values, cited sources.</div>
+    </div></div>
+    <div class="txt">
+      <div class="eyebrow">AI signals</div>
+      <h2 style="margin-top:10px">AI that shows its work</h2>
+      <p>Filings, transcripts, and news become bounded, source-cited numbers that drop straight into the same honest backtest. Every signal carries its information coefficient — so a lucky curve on a meaningless signal can't sneak through.</p>
+    </div>
+  </div>
+  <div class="frow">
+    <div class="txt">
+      <div class="eyebrow">Reporting</div>
+      <h2 style="margin-top:10px">Reports an allocator can audit</h2>
+      <p>Shareable research tearsheets with the methodology footnoted on the page. The footnotes are the feature — what you send is what was actually tested.</p>
+    </div>
+    <div class="media"><div class="slot">
+      <div class="sname">SLOT D3 — report_export_crop</div><div class="smeta num">4:3</div>
+      <div class="shint">The rendered report page, methodology footnotes visible.</div>
+    </div></div>
+  </div>
+</div></section>
+
+<section id="numbers" class="numbers"><div class="wrap">
+  <div class="eyebrow">Rigor, quantified</div>
+  <div class="nb num" style="margin-top:26px">
+    <div class="stat"><div class="v">50/50</div><div class="l">engine tests passing*</div></div>
+    <div class="stat"><div class="v">100%</div><div class="l">runs with deflated Sharpe*</div></div>
+    <div class="stat"><div class="v">0</div><div class="l">look-ahead leaks, proven*</div></div>
+  </div>
+  <p class="method">*Every figure verifiable in the public test suite — <a>read the methodology</a>.</p>
+</div></section>
+
+<section class="audit"><div class="wrap">
+  <div class="eyebrow">Under the hood</div>
+  <h2 style="margin-top:12px">Built to be audited.</h2>
+  <div class="audit4">
+    <div class="acard"><h3>Deterministic seeds</h3><p>Same inputs, same outputs. Every run reproduces exactly.</p></div>
+    <div class="acard"><h3>Point-in-time data</h3><p>A value exists only from the date it was knowable.</p></div>
+    <div class="acard"><h3>Open methodology</h3><p>Deflated Sharpe, PBO, and IC — documented, not proprietary mystery.</p></div>
+    <div class="acard"><h3>Reproducible runs</h3><p>Every verdict traceable to code, data, and declared trials.</p></div>
+  </div>
+</div></section>
+
+<section class="closing">
+  <div class="glow"></div>
+  <div class="wrap">
+    <h2>Put your strategy on trial.</h2>
+    <div class="ctas"><a class="btn btn-primary">Run your first honest backtest</a><a class="btn">See a sample verdict</a></div>
+    <p>Research software, not investment advice.</p>
+  </div>
+</section>
+
+<footer><div class="wrap frow2">
+  <div style="max-width:56ch">AlphaForge is research software, not investment advice, and does not provide buy or sell recommendations. Backtested performance is hypothetical and not indicative of future results. © 2026 AlphaForge.</div>
+  <div class="links"><a>Methodology</a><a>Docs</a><a>Contact</a></div>
+</div></footer>
+
+<script>
+  const nav=document.getElementById('nav');
+  addEventListener('scroll',()=>nav.classList.toggle('scrolled',scrollY>8),{passive:true});
+</script>
+</body>
+</html>
