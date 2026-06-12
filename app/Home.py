@@ -37,7 +37,16 @@ def fmt(v, spec: str = "", na: str = "n/a") -> str:
     except (ValueError, TypeError):
         return str(v)
 
-st.set_page_config(page_title="AlphaForge", page_icon="🛠️", layout="wide")
+# --- screenshot mode (?shot=1) ----------------------------------------------
+# Auto-runs a backtest on load and hides dev chrome so marketing captures show a
+# finished run. Params: shot=1, factor, periods, trials, sb=0 (collapse sidebar).
+# Used by scripts/capture_screens.py; harmless in normal use.
+_qp = st.query_params
+SHOT_MODE = _qp.get("shot") == "1"
+_sb = "collapsed" if _qp.get("sb") == "0" else "expanded"
+
+st.set_page_config(page_title="AlphaForge", page_icon="🛠️", layout="wide",
+                   initial_sidebar_state=_sb)
 st.title("AlphaForge")
 st.caption("The research OS for emerging quant managers — **the backtest that won't let you lie to yourself.**")
 
@@ -66,11 +75,24 @@ def run_request(payload: dict) -> dict:
 
 
 if "api_mode" not in st.session_state:
-    st.session_state["api_mode"] = api_is_up()
+    st.session_state["api_mode"] = False if SHOT_MODE else api_is_up()
 
-mode_label = (f"connected to API at {API_URL}" if st.session_state["api_mode"]
-              else "API not detected — running the engine in-process (same code path)")
-st.info(f"Mode: {mode_label}", icon="🔌")
+if not SHOT_MODE:
+    mode_label = (f"connected to API at {API_URL}" if st.session_state["api_mode"]
+                  else "API not detected — running the engine in-process (same code path)")
+    st.info(f"Mode: {mode_label}", icon="🔌")
+
+if SHOT_MODE and "result" not in st.session_state:
+    _payload = {
+        "provider": "synthetic", "symbols": [],
+        "factor": _qp.get("factor", "quality"),
+        "lookback": int(_qp.get("lookback", 252)), "skip": int(_qp.get("skip", 21)),
+        "cost_bps": float(_qp.get("cost", 5.0)), "gross": 1.0,
+        "n_trials": int(_qp.get("trials", 20)),
+        "periods": int(_qp.get("periods", 1512)), "seed": int(_qp.get("seed", 42)),
+        "start": "2015-01-02",
+    }
+    st.session_state["result"] = run_backtest_workflow(_payload)
 
 # ----------------------------- sidebar -----------------------------
 with st.sidebar:
@@ -92,8 +114,9 @@ with st.sidebar:
         periods = st.slider("Days (synthetic)", 400, 3000, 1512, step=50)
         seed = st.number_input("Seed", min_value=0, value=42, step=1)
 
-    factor = st.selectbox("Factor", ["momentum", "reversal", "lowvol", "blend",
-                                     "value", "quality", "value_quality"])
+    _factors = ["momentum", "reversal", "lowvol", "blend", "value", "quality", "value_quality"]
+    _fidx = _factors.index(_qp.get("factor")) if (SHOT_MODE and _qp.get("factor") in _factors) else 0
+    factor = st.selectbox("Factor", _factors, index=_fidx)
     if factor in ("value", "quality", "value_quality"):
         st.caption("📒 Fundamental factors use point-in-time fundamentals (filing-date lagged) — "
                    "synthetic provider only in this MVP, since free data isn't point-in-time.")
