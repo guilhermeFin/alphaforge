@@ -52,8 +52,9 @@ numbers are identical by construction (and tested to be).
 
 ```
 research/
-  data.py         # provider interface + synthetic regime/fat-tail generator + yfinance
+  data.py         # provider interface + synthetic regime/fat-tail world + fundamentals + yfinance
   factors.py      # momentum, vol, reversal; cross-sectional z-score; dollar-neutral weights
+  fundamentals.py # POINT-IN-TIME fundamentals (filing-date lagged) -> value & quality factors
   backtest.py     # THE MOAT: point-in-time backtester (no look-ahead, costs on turnover)
   metrics.py      # Sharpe/Sortino/Calmar/drawdown + Probabilistic & Deflated Sharpe + JB
   walkforward.py  # in-sample vs out-of-sample, walk-forward folds, overfit flag

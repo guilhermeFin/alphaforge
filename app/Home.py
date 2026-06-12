@@ -92,7 +92,11 @@ with st.sidebar:
         periods = st.slider("Days (synthetic)", 400, 3000, 1512, step=50)
         seed = st.number_input("Seed", min_value=0, value=42, step=1)
 
-    factor = st.selectbox("Factor", ["momentum", "reversal", "lowvol", "blend"])
+    factor = st.selectbox("Factor", ["momentum", "reversal", "lowvol", "blend",
+                                     "value", "quality", "value_quality"])
+    if factor in ("value", "quality", "value_quality"):
+        st.caption("📒 Fundamental factors use point-in-time fundamentals (filing-date lagged) — "
+                   "synthetic provider only in this MVP, since free data isn't point-in-time.")
     lookback = st.slider("Lookback (days)", 21, 504, 252, step=21)
     # skip must stay below lookback (the service rejects skip >= lookback); cap the
     # widget so the UI can't produce a request the engine will refuse.
@@ -139,7 +143,7 @@ wf_dsr = wf.get("deflated_sr") if "error" not in wf else None
 
 st.caption(f"{meta['n_symbols']} symbols × {meta['n_days']} days "
            f"({meta['start_date']} → {meta['end_date']}) · factor: {meta['factor']} "
-           f"(effective lookback {meta.get('effective_lookback', meta['lookback'])}) · "
+           f"(effective lookback {meta.get('effective_lookback') or 'n/a'}) · "
            f"costs: {meta['cost_bps']} bps · provider: {meta['provider']}")
 
 # ----------------------------- headline metrics -----------------------------

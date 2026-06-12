@@ -212,3 +212,46 @@ def make_synthetic_world(
 
     return World(close=close, volume=volume, quality=quality, events=events,
                  regime=pd.Series(states, index=dates, name="regime"))
+
+
+def make_synthetic_fundamentals(
+    world: World,
+    reporting_lag_days: int = 75,
+    period_days: int = 63,
+    seed: int = 0,
+) -> pd.DataFrame:
+    """Quarterly fundamentals for a synthetic World, with a realistic reporting lag.
+
+    Returns a long table [symbol, period_end, available_date, metric, value]. The
+    KEY honesty property: ``available_date`` = fiscal period end + ``reporting_lag_days``
+    (a quarter's numbers are not knowable until the filing lands ~75 days later).
+    Quality-type metrics (roe, gross_profitability, low leverage) track the latent
+    ``world.quality`` so the QUALITY factor has a genuine, point-in-time-correct
+    signal to find; the price-ratio inputs (eps/bvps/sps) are made ~scale-free, so
+    the VALUE factor is intentionally NOT planted (on synthetic data it should look
+    like noise — and the engine should be honestly unconvinced by it).
+    """
+    rng = np.random.default_rng(seed)
+    idx = world.close.index
+    T = len(idx)
+    rows = []
+    period_ends = idx[period_days - 1::period_days]
+    for pe in period_ends:
+        pos = idx.searchsorted(pe + pd.Timedelta(days=reporting_lag_days))
+        if pos >= T:
+            continue
+        avail = idx[pos]
+        for sym in world.symbols:
+            ql = float(world.quality.loc[pe, sym])
+            px = float(world.close.loc[pe, sym])
+            metrics = {
+                "roe": 0.12 + 0.06 * ql + rng.normal(0, 0.02),
+                "gross_profitability": 0.30 + 0.10 * ql + rng.normal(0, 0.03),
+                "leverage": max(0.05, 0.80 - 0.25 * ql + rng.normal(0, 0.10)),
+                "eps_ttm": px * (0.05 + rng.normal(0, 0.010)),   # ~constant earnings yield
+                "bvps": px * (0.50 + rng.normal(0, 0.100)),       # ~constant book-to-price
+                "sps": px * (0.80 + rng.normal(0, 0.150)),        # ~constant sales-to-price
+            }
+            for metric, value in metrics.items():
+                rows.append((sym, pe, avail, metric, float(value)))
+    return pd.DataFrame(rows, columns=["symbol", "period_end", "available_date", "metric", "value"])

@@ -108,3 +108,24 @@ def test_meta_reports_effective_lookback():
     assert body["meta"]["effective_lookback"] == 63   # reversal caps the lookback
     body2 = client.post("/backtest", json=_small_req(factor="momentum", lookback=126)).json()
     assert body2["meta"]["effective_lookback"] == 126  # momentum uses it as-is
+
+
+def test_fundamental_factors_run_on_synthetic():
+    for f in ("value", "quality", "value_quality"):
+        body = client.post("/backtest", json=_small_req(factor=f, periods=800)).json()
+        assert "scorecard" in body
+        assert body["meta"]["effective_lookback"] is None          # lookback n/a for fundamentals
+        assert body["verdict"].startswith(("CREDIBLE", "NOT CREDIBLE"))
+
+
+def test_quality_factor_is_certified_on_planted_synthetic():
+    # the synthetic world plants a real point-in-time quality signal -> the engine
+    # must CERTIFY it (proves the tool also passes genuine signals, not just rejects).
+    body = client.post("/backtest", json=_small_req(factor="quality", periods=1512, n_trials=20)).json()
+    assert body["verdict"].startswith("CREDIBLE"), body["verdict"]
+
+
+def test_fundamental_factor_rejects_yfinance():
+    r = client.post("/backtest", json=_small_req(factor="quality", provider="yfinance",
+                                                 symbols=["AAPL", "MSFT"]))
+    assert r.status_code in (400, 422)

@@ -15,7 +15,7 @@ from typing import Any
 import numpy as np
 import pandas as pd
 
-from research import data, factors, stats_guards
+from research import data, factors, fundamentals, stats_guards
 from research.backtest import backtest
 from research.walkforward import split_backtest, walk_forward
 
@@ -26,7 +26,8 @@ DISCLAIMER = (
     "never an edge."
 )
 
-FACTORS = ("momentum", "reversal", "lowvol", "blend")
+FACTORS = ("momentum", "reversal", "lowvol", "blend", "value", "quality", "value_quality")
+FUNDAMENTAL_FACTORS = ("value", "quality", "value_quality")
 PROVIDERS = ("synthetic", "yfinance")
 
 # hard input bounds — the service refuses absurd requests instead of hanging
@@ -166,24 +167,47 @@ def run_backtest_workflow(req: dict) -> dict:
     """Validate -> load data -> factor -> honest backtest -> full verdict dict."""
     p = _validate(req)
 
-    if p["provider"] == "synthetic":
-        panel = data.get_panel(
-            p["symbols"] or [f"S{i:02d}" for i in range(15)],
-            provider="synthetic", start=p["start"],
-            periods=p["periods"], seed=p["seed"],
-        )
+    if p["factor"] in FUNDAMENTAL_FACTORS:
+        # Fundamental factors need point-in-time fundamentals. Free vendors serve
+        # RESTATED numbers (look-ahead), so the only honest path today is the
+        # synthetic world; real PIT data plugs into the same interface later.
+        if p["provider"] != "synthetic":
+            raise WorkflowError(
+                "value/quality factors require the 'synthetic' provider in this MVP — "
+                "free point-in-time fundamentals are not wired yet, and using restated "
+                "free data would reintroduce the look-ahead this tool refuses to allow")
+        syms = p["symbols"] or [f"S{i:02d}" for i in range(20)]
+        world = data.make_synthetic_world(syms, start=p["start"], periods=p["periods"],
+                                          seed=p["seed"], quality_to_drift=0.0016)
+        close = world.close
+        if len(close) < 400:
+            raise WorkflowError("fundamental factors need >= 400 days (several quarters + OOS)")
+        obs = data.make_synthetic_fundamentals(world, seed=p["seed"])
+        fund = fundamentals.build_fundamentals(obs, close.index, list(close.columns))
+        if p["factor"] == "value":
+            score = fundamentals.value_score(fund, close)
+        elif p["factor"] == "quality":
+            score = fundamentals.quality_score(fund, close)
+        else:
+            score = fundamentals.value_quality_score(fund, close)
     else:
-        panel = data.get_panel(p["symbols"], start=p["start"], provider="yfinance")
+        if p["provider"] == "synthetic":
+            panel = data.get_panel(
+                p["symbols"] or [f"S{i:02d}" for i in range(15)],
+                provider="synthetic", start=p["start"],
+                periods=p["periods"], seed=p["seed"],
+            )
+        else:
+            panel = data.get_panel(p["symbols"], start=p["start"], provider="yfinance")
+        close = panel.close.dropna(how="all", axis=1)
+        if close.shape[1] < 2:
+            raise WorkflowError("need at least 2 symbols with data for a cross-sectional strategy")
+        if len(close) < MIN_PERIODS:
+            raise WorkflowError(f"only {len(close)} usable days of data (need >= {MIN_PERIODS})")
+        if len(close) <= p["lookback"] + p["skip"] + 21:
+            raise WorkflowError("lookback too long for the data window")
+        score = _score(close, p["factor"], p["lookback"], p["skip"])
 
-    close = panel.close.dropna(how="all", axis=1)
-    if close.shape[1] < 2:
-        raise WorkflowError("need at least 2 symbols with data for a cross-sectional strategy")
-    if len(close) < MIN_PERIODS:
-        raise WorkflowError(f"only {len(close)} usable days of data (need >= {MIN_PERIODS})")
-    if len(close) <= p["lookback"] + p["skip"] + 21:
-        raise WorkflowError("lookback too long for the data window")
-
-    score = _score(close, p["factor"], p["lookback"], p["skip"])
     weights = factors.long_short_weights(score, gross=p["gross"])
     res = backtest(close, weights, cost_bps=p["cost_bps"])
 
@@ -218,7 +242,8 @@ def run_backtest_workflow(req: dict) -> dict:
     return _jsonable({
         "meta": {
             **p,
-            "effective_lookback": _effective_lookback(p["factor"], p["lookback"]),
+            "effective_lookback": (None if p["factor"] in FUNDAMENTAL_FACTORS
+                                   else _effective_lookback(p["factor"], p["lookback"])),
             "n_symbols": int(close.shape[1]),
             "n_days": int(len(close)),
             "start_date": str(close.index[0].date()),
