@@ -1,0 +1,186 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>AlphaForge — the backtest that won't let you lie to yourself</title>
+<style>
+  :root{
+    --ink:#15151a; --muted:#63636c; --faint:#9a9aa2; --line:#e8e8e3;
+    --bg:#ffffff; --bg2:#f6f6f2; --accent:#4f46e5; --accent-d:#3730a3;
+    --green:#15803d; --greenbg:#eaf5ee; --red:#c0392b; --redbg:#fbece9; --amber:#b45309;
+    --cardbg:#0c0d11; --cardink:#eaeaef; --cardmuted:#8c8d98; --cardline:#23242b;
+    --mono:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;
+    --sans:-apple-system,"Segoe UI",Inter,system-ui,Roboto,sans-serif;
+  }
+  *{box-sizing:border-box;margin:0;padding:0}
+  body{font-family:var(--sans);color:var(--ink);background:var(--bg);line-height:1.6;-webkit-font-smoothing:antialiased}
+  .wrap{max-width:1080px;margin:0 auto;padding:0 28px}
+  a{color:inherit;text-decoration:none}
+  .mono{font-family:var(--mono)}
+  .eyebrow{font-size:12.5px;letter-spacing:.08em;text-transform:uppercase;color:var(--faint);font-weight:600}
+  /* nav */
+  nav{border-bottom:1px solid var(--line)}
+  .navrow{display:flex;align-items:center;justify-content:space-between;height:64px}
+  .logo{display:flex;align-items:center;gap:9px;font-weight:600;font-size:16px}
+  .mark{width:22px;height:22px;border:1.5px solid var(--ink);border-radius:6px;display:grid;place-items:center;font-family:var(--mono);font-size:13px}
+  .navlinks{display:flex;gap:26px;font-size:14.5px;color:var(--muted)}
+  .navlinks a:hover{color:var(--ink)}
+  .btn{display:inline-flex;align-items:center;gap:7px;font-size:14.5px;font-weight:500;padding:9px 16px;border-radius:8px;border:1px solid var(--line);cursor:pointer;background:var(--bg);transition:.15s}
+  .btn:hover{border-color:#cfcfca}
+  .btn-primary{background:var(--accent);color:#fff;border-color:var(--accent)}
+  .btn-primary:hover{background:var(--accent-d);border-color:var(--accent-d)}
+  /* hero */
+  .hero{display:grid;grid-template-columns:1.05fr .95fr;gap:52px;align-items:center;padding:76px 0 64px}
+  h1{font-size:47px;line-height:1.04;font-weight:700;letter-spacing:-.02em}
+  .sub{font-size:18px;color:var(--muted);margin:22px 0 28px;max-width:34ch}
+  .ctas{display:flex;gap:12px;flex-wrap:wrap}
+  .trust{margin-top:18px;font-size:13px;color:var(--faint);max-width:42ch}
+  /* verdict card */
+  .card{background:var(--cardbg);color:var(--cardink);border-radius:14px;padding:20px;border:1px solid var(--cardline)}
+  .card-top{display:flex;justify-content:space-between;align-items:baseline;border-bottom:1px solid var(--cardline);padding-bottom:12px;margin-bottom:14px}
+  .card-top .lab{font-size:12px;color:var(--cardmuted);font-family:var(--mono)}
+  .spark{width:100%;height:78px;margin:4px 0 6px}
+  .splitlab{display:flex;justify-content:space-between;font-family:var(--mono);font-size:10.5px;color:var(--cardmuted);margin-bottom:14px}
+  .row3{display:grid;grid-template-columns:repeat(3,1fr);gap:8px;margin-bottom:16px}
+  .stat{background:#15161b;border-radius:8px;padding:9px 10px}
+  .stat .k{font-size:10.5px;color:var(--cardmuted);font-family:var(--mono)}
+  .stat .v{font-size:16px;font-family:var(--mono);margin-top:2px}
+  .gap{background:#15161b;border:1px solid var(--cardline);border-left:3px solid var(--red);border-radius:8px;padding:13px 14px;margin-bottom:12px}
+  .gap .line{display:flex;justify-content:space-between;align-items:center;font-family:var(--mono);font-size:13px;padding:3px 0}
+  .gap .big{font-size:21px}
+  .pill{font-family:var(--mono);font-size:11px;font-weight:600;letter-spacing:.04em;padding:4px 9px;border-radius:6px}
+  .pill-red{background:#33181a;color:#ff8b80}
+  .pill-green{background:#15281c;color:#7ee2a8}
+  .cardcap{font-size:12.5px;color:var(--cardmuted);line-height:1.55}
+  /* sections */
+  section{padding:66px 0}
+  .alt{background:var(--bg2);border-top:1px solid var(--line);border-bottom:1px solid var(--line)}
+  h2{font-size:30px;font-weight:700;letter-spacing:-.015em;max-width:24ch}
+  .lead{font-size:17px;color:var(--muted);max-width:62ch;margin-top:16px;line-height:1.7}
+  .steps{display:grid;grid-template-columns:repeat(3,1fr);gap:22px;margin-top:38px}
+  .step .n{font-family:var(--mono);font-size:13px;color:var(--accent);font-weight:600}
+  .step h3{font-size:17px;font-weight:600;margin:9px 0 6px}
+  .step p{font-size:14.5px;color:var(--muted)}
+  .feat{display:grid;grid-template-columns:repeat(2,1fr);gap:1px;margin-top:38px;background:var(--line);border:1px solid var(--line);border-radius:12px;overflow:hidden}
+  .fcell{background:var(--bg);padding:22px 24px}
+  .fcell h3{font-size:15.5px;font-weight:600;display:flex;align-items:center;gap:8px}
+  .fcell h3 .dot{width:7px;height:7px;border-radius:50%;background:var(--green)}
+  .fcell p{font-size:14px;color:var(--muted);margin-top:7px}
+  /* pricing */
+  .tiers{display:grid;grid-template-columns:repeat(4,1fr);gap:14px;margin-top:38px}
+  .tier{border:1px solid var(--line);border-radius:12px;padding:20px}
+  .tier .name{font-weight:600;font-size:15px}
+  .tier .price{font-family:var(--mono);font-size:20px;margin:8px 0 4px}
+  .tier .desc{font-size:13px;color:var(--muted);min-height:54px}
+  .tier.feat-tier{border:2px solid var(--accent)}
+  .tag{display:inline-block;font-size:11px;color:var(--accent-d);background:#eef0fe;padding:3px 9px;border-radius:6px;margin-bottom:8px;font-weight:600}
+  /* close + footer */
+  .close{text-align:center;padding:84px 0}
+  .close h2{margin:0 auto;font-size:34px}
+  .close p{color:var(--muted);font-size:18px;margin:14px 0 26px}
+  footer{border-top:1px solid var(--line);padding:34px 0;color:var(--faint);font-size:12.5px;line-height:1.7}
+  footer .frow{display:flex;justify-content:space-between;gap:24px;flex-wrap:wrap}
+  @media(max-width:860px){.hero{grid-template-columns:1fr;gap:36px;padding:48px 0}h1{font-size:38px}.row3,.steps,.feat,.tiers{grid-template-columns:1fr 1fr}.navlinks{display:none}}
+</style>
+</head>
+<body>
+
+<nav><div class="wrap navrow">
+  <div class="logo"><span class="mark mono">A</span>AlphaForge</div>
+  <div class="navlinks"><a href="#problem">The problem</a><a href="#how">How it works</a><a href="#why">Why it's different</a><a href="#pricing">Pricing</a></div>
+  <a class="btn btn-primary">Test free</a>
+</div></nav>
+
+<header class="wrap hero">
+  <div>
+    <div class="eyebrow">Honest backtesting &amp; research</div>
+    <h1 style="margin-top:14px">Your backtest is probably lying to you.</h1>
+    <p class="sub">AlphaForge tells you whether your trading edge is real — point-in-time, after costs, and after every variation you tried. The tool that won't let you lie to yourself.</p>
+    <div class="ctas">
+      <a class="btn btn-primary">Test your first strategy — free</a>
+      <a class="btn">See how the verdict works</a>
+    </div>
+    <p class="trust">Research software, not investment advice. We don't tell you what to buy — we tell you whether your idea holds up.</p>
+  </div>
+
+  <div class="card" role="img" aria-label="A strategy verdict card showing a momentum strategy that looks 97.6% significant by the naive PSR but is rated NOT CREDIBLE by the Deflated Sharpe of 0.38.">
+    <div class="card-top"><span style="font-size:13px;font-weight:500">Strategy verdict</span><span class="lab">12-1 momentum · 15 names · ’15–’26</span></div>
+    <svg class="spark" viewBox="0 0 320 78" preserveAspectRatio="none" aria-hidden="true">
+      <line x1="208" y1="6" x2="208" y2="72" stroke="#2b2c34" stroke-width="1" stroke-dasharray="3 3"/>
+      <polyline points="2,60 40,52 78,40 116,30 150,20 184,14 208,17" fill="none" stroke="#7ee2a8" stroke-width="2"/>
+      <polyline points="208,17 236,30 266,40 292,52 318,58" fill="none" stroke="#ff8b80" stroke-width="2"/>
+    </svg>
+    <div class="splitlab"><span>in-sample</span><span>out-of-sample</span></div>
+    <div class="row3">
+      <div class="stat"><div class="k">ann. sharpe</div><div class="v">0.58</div></div>
+      <div class="stat"><div class="k">max drawdown</div><div class="v">−25.6%</div></div>
+      <div class="stat"><div class="k">hit rate</div><div class="v">52.6%</div></div>
+    </div>
+    <div class="gap">
+      <div class="line"><span style="color:var(--cardmuted)">naive significance (PSR)</span><span>0.976</span></div>
+      <div class="line"><span>deflated sharpe</span><span class="big">0.38</span></div>
+      <div class="line" style="margin-top:8px"><span style="color:var(--cardmuted)">signal IC t-stat</span><span>0.03</span></div>
+    </div>
+    <div style="display:flex;align-items:center;gap:10px;margin-bottom:12px">
+      <span class="pill pill-red">NOT CREDIBLE</span>
+      <span style="font-size:12px;color:var(--cardmuted)">does not survive the multiple-testing haircut</span>
+    </div>
+    <p class="cardcap">Looks 97.6% significant. Isn't. You tried 50 variations — we accounted for that, and the signal itself carries no information (t ≈ 0).</p>
+  </div>
+</header>
+
+<section id="problem" class="alt"><div class="wrap">
+  <div class="eyebrow">The problem</div>
+  <h2 style="margin-top:12px">Most backtests are fiction with good production values.</h2>
+  <p class="lead">Look-ahead bias. Survivorship bias. Costs that quietly vanish. And the big one: you tried fifty versions and kept the one that looked best — luck wearing a lab coat. Quantopian crowdsourced alpha from 300,000 people and shut down; the industry learned that crowdsourcing alpha mostly crowdsources overfit. The popular tools make it worse, sweeping 100,000 parameter combinations to hand you the prettiest curve. The market eventually corrects the record. It charges for the lesson.</p>
+</div></section>
+
+<section id="how"><div class="wrap">
+  <div class="eyebrow">How it works</div>
+  <h2 style="margin-top:12px">Test it the way reality will.</h2>
+  <div class="steps">
+    <div class="step"><div class="n">01</div><h3>Bring an idea</h3><p>A factor, a rule, or text — a filing, a transcript, news. The AI copilot turns the messy stuff into clean, sourced, testable numbers.</p></div>
+    <div class="step"><div class="n">02</div><h3>Test it honestly</h3><p>Point-in-time data, real costs, walk-forward and out-of-sample by default. No knobs that let you cheat.</p></div>
+    <div class="step"><div class="n">03</div><h3>Get the verdict</h3><p>A Deflated Sharpe that knows how many things you tried, and a read on whether the signal itself carries information. In plain words: credible, or probably luck.</p></div>
+  </div>
+</div></section>
+
+<section id="why" class="alt"><div class="wrap">
+  <div class="eyebrow">Why it's different</div>
+  <h2 style="margin-top:12px">The rigor is the product — not a setting.</h2>
+  <div class="feat">
+    <div class="fcell"><h3><span class="dot"></span>No look-ahead — proven, not promised</h3><p>Truncate the data and the past doesn't move. Point-in-time by construction, and tested for it.</p></div>
+    <div class="fcell"><h3><span class="dot"></span>The Deflated Sharpe verdict</h3><p>The multiple-testing math the pros publish and nobody ships — built in, and impossible to switch off.</p></div>
+    <div class="fcell"><h3><span class="dot"></span>Signal quality, not vibes</h3><p>We measure your signal's information coefficient, so a lucky curve on a meaningless signal can't sneak through.</p></div>
+    <div class="fcell"><h3><span class="dot"></span>AI you can interrogate</h3><p>Every AI signal is a bounded, source-cited number you can test — never a "trust me" score.</p></div>
+    <div class="fcell"><h3><span class="dot"></span>It flags fat tails</h3><p>When your returns aren't Normal, we say so — and we won't let a Gaussian risk number pretend otherwise.</p></div>
+    <div class="fcell"><h3><span class="dot"></span>Walk-forward by default</h3><p>In-sample brilliance that dies out-of-sample gets flagged, loudly, every time.</p></div>
+  </div>
+</div></section>
+
+<section id="pricing"><div class="wrap">
+  <div class="eyebrow">Pricing</div>
+  <h2 style="margin-top:12px">Built for you, priced for you.</h2>
+  <div class="tiers">
+    <div class="tier"><div class="name">Indie</div><div class="price">Free</div><div class="desc">Run honest backtests. Get the verdict. The proof, no card.</div><a class="btn" style="width:100%;justify-content:center">Start</a></div>
+    <div class="tier feat-tier"><span class="tag">Most popular</span><div class="name">Pro</div><div class="price">$49–99<span style="font-size:13px;color:var(--muted)">/mo</span></div><div class="desc">Full factor library, AI signals, saved reproducible research.</div><a class="btn btn-primary" style="width:100%;justify-content:center">Choose Pro</a></div>
+    <div class="tier"><div class="name">Manager</div><div class="price">$300–800<span style="font-size:13px;color:var(--muted)">/mo</span></div><div class="desc">Multi-asset portfolios, attribution, exports — the emerging-manager stack.</div><a class="btn" style="width:100%;justify-content:center">Talk to us</a></div>
+    <div class="tier"><div class="name">Team / API</div><div class="price">Custom</div><div class="desc">Signal API and workspaces for small funds and desks.</div><a class="btn" style="width:100%;justify-content:center">Contact</a></div>
+  </div>
+  <p style="font-size:12.5px;color:var(--faint);margin-top:14px">Indicative pricing, validating with early users.</p>
+</div></section>
+
+<section class="close alt"><div class="wrap">
+  <h2>Find out if your edge is real.</h2>
+  <p>Before the market tells you the expensive way.</p>
+  <a class="btn btn-primary" style="font-size:16px;padding:12px 24px">Test your first strategy — free</a>
+</div></section>
+
+<footer><div class="wrap frow">
+  <div class="logo" style="font-size:14px"><span class="mark mono" style="width:18px;height:18px;font-size:11px">A</span>AlphaForge</div>
+  <div style="max-width:62ch">AlphaForge is research software, not investment advice, and does not provide buy or sell recommendations. Backtests are hypothetical, have inherent limitations, and past performance does not guarantee future results. © 2026 AlphaForge.</div>
+</div></footer>
+
+</body>
+</html>
