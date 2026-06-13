@@ -27,6 +27,9 @@ data/
 *.feather
 cache/
 
+# Marketing build artifacts (verification screenshots)
+marketing/assets/_*.png
+
 # Notebooks
 .ipynb_checkpoints/
 
