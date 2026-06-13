@@ -1,5 +1,7 @@
 # AlphaForge
 
+[![tests](https://github.com/guilhermeFin/alphaforge/actions/workflows/ci.yml/badge.svg)](https://github.com/guilhermeFin/alphaforge/actions/workflows/ci.yml)
+
 > The research OS for emerging quant managers — *the tool that won't let you lie to yourself.*
 
 AlphaForge takes you from idea → tested strategy → risk-managed portfolio in one place.
