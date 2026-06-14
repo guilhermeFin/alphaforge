@@ -12,7 +12,11 @@ Correctness > cleverness. A single embarrassing false-positive backtest damages
 the brand more than a missing feature.
 """
 
-from . import data, factors, metrics, backtest, walkforward, stats_guards
+from . import (data, factors, metrics, backtest, walkforward, stats_guards,
+               fundamentals, providers, signal_quality, factor_lib, overfitting,
+               trial_ledger)
 
-__all__ = ["data", "factors", "metrics", "backtest", "walkforward", "stats_guards"]
+__all__ = ["data", "factors", "metrics", "backtest", "walkforward", "stats_guards",
+           "fundamentals", "providers", "signal_quality", "factor_lib",
+           "overfitting", "trial_ledger"]
 __version__ = "0.0.1"
