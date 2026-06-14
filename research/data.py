@@ -255,3 +255,163 @@ def make_synthetic_fundamentals(
             for metric, value in metrics.items():
                 rows.append((sym, pe, avail, metric, float(value)))
     return pd.DataFrame(rows, columns=["symbol", "period_end", "available_date", "metric", "value"])
+
+
+def make_synthetic_raw_fundamentals(
+    world: World,
+    reporting_lag_days: int = 75,
+    period_days: int = 63,
+    seed: int = 0,
+) -> pd.DataFrame:
+    """Quarterly RAW canonical fundamentals for a synthetic World, with a reporting lag.
+
+    Companion to ``make_synthetic_fundamentals`` that emits the CANONICAL RAW FIELDS
+    (revenue, cogs, gross_profit, ... op_cash_flow, capex — the keys of
+    ``providers.CANONICAL_FIELDS``) instead of pre-derived ratios. This lets the full
+    factor library (research/factor_lib.py) run end-to-end offline against the same
+    point-in-time machinery the paid vendors feed.
+
+    Returns a long table [symbol, period_end, available_date, metric, value] with the
+    SAME honesty property as its sibling: ``available_date`` = fiscal period end +
+    ``reporting_lag_days`` (the filing is not knowable until it lands).
+
+    Signal design (so the engine measures something honest):
+      * Every raw field is driven by the latent per-name ``world.quality`` state at the
+        period end. Higher quality -> higher gross profitability, ROE, operating margin,
+        operating cash flow; LOWER leverage and LOWER accruals. So the QUALITY /
+        PROFITABILITY factors built from these fields carry a genuine, point-in-time
+        predictive signal (quality drives the next day's drift in World).
+      * VALUE ratios (earnings/book/sales-to-price) are deliberately NOT planted: scale
+        (revenue, equity, shares) is an independent per-name draw uncorrelated with
+        quality, and price is the realised synthetic price, so E/P, B/P, S/P look like
+        ~scale-free noise. On synthetic data the value factor SHOULD look unconvincing.
+
+    Accounting is kept self-consistent within each statement:
+      gross_profit = revenue - cogs;  ebit ~= gross_profit - sga - r&d (>0 by construction
+      via the margin design);  net_income ~= (ebit - interest_expense) * (1 - tax);
+      op_cash_flow ~= net_income + D&A-like noise (accruals wedge keyed to quality);
+      total_assets > 0;  common_equity > 0;  balance-sheet pieces sum coherently.
+
+    Does NOT modify ``make_synthetic_fundamentals``.
+    """
+    rng = np.random.default_rng(seed)
+    idx = world.close.index
+    T = len(idx)
+    symbols = world.symbols
+    n = len(symbols)
+
+    # ---- per-name, time-invariant SCALE draws (uncorrelated with quality) ----
+    # These set each firm's "size". Because they are independent of quality, the
+    # price-ratio (value) factors derived downstream are scale-free noise, not planted.
+    base_assets = rng.uniform(5e8, 5e10, n)          # total assets in $
+    shares = rng.uniform(5e7, 5e8, n)                 # diluted share count
+    # asset turnover (revenue / assets): a pure per-name draw, INDEPENDENT of quality,
+    # so the value ratios it feeds (sales/earnings/book-to-price) stay scale-free noise.
+    # Kept in a tight band so that gross_profitability = turnover * gross_margin is
+    # driven mainly by the quality-loaded margin, not by turnover dispersion.
+    base_turnover = rng.uniform(0.95, 1.05, n)
+
+    rows = []
+    period_ends = idx[period_days - 1::period_days]
+    for pe in period_ends:
+        pos = idx.searchsorted(pe + pd.Timedelta(days=reporting_lag_days))
+        if pos >= T:
+            continue
+        avail = idx[pos]
+        for j, sym in enumerate(symbols):
+            ql = float(world.quality.loc[pe, sym])  # latent quality (unit-variance-ish)
+
+            # ----- income statement (quarter) -----
+            assets = base_assets[j] * float(np.exp(rng.normal(0.0, 0.03)))
+            # asset turnover is pure noise (no quality tilt) -> revenue scale carries
+            # NO quality info, so value ratios remain unplanted.
+            turnover_q = base_turnover[j] + rng.normal(0.0, 0.03)
+            turnover_q = float(max(0.05, turnover_q))
+            revenue = assets * turnover_q / 4.0  # quarterly slice of annual turnover
+
+            # gross margin rises STRONGLY and cleanly with quality (the genuine signal).
+            # Strong loading + tiny idiosyncratic noise so gross_profitability is a near-
+            # monotone function of latent quality (the planted, point-in-time edge).
+            gross_margin = float(np.clip(0.40 + 0.22 * ql + rng.normal(0.0, 0.005), 0.02, 0.95))
+            gross_profit = revenue * gross_margin
+            cogs = revenue - gross_profit  # exact self-consistency
+
+            # opex as a share of revenue FALLS with quality -> higher operating margin
+            sga = revenue * float(np.clip(0.18 - 0.05 * ql + rng.normal(0.0, 0.010), 0.02, 0.50))
+            rnd = revenue * float(np.clip(0.04 + 0.01 * ql + rng.normal(0.0, 0.004), 0.0, 0.30))
+            ebit = gross_profit - sga - rnd  # ~ operating income
+
+            # ----- balance sheet (point-in-time stock) -----
+            # leverage (debt/assets) FALLS with quality
+            lev = float(np.clip(0.45 - 0.12 * ql + rng.normal(0.0, 0.05), 0.0, 0.90))
+            total_debt = assets * lev
+            current_debt = total_debt * float(np.clip(0.30 + rng.normal(0.0, 0.05), 0.05, 0.95))
+            long_term_debt = total_debt - current_debt
+            # non-debt liabilities (payables etc.) as a modest share of assets
+            other_liab = assets * float(np.clip(0.18 + rng.normal(0.0, 0.04), 0.02, 0.50))
+            total_liabilities = total_debt + other_liab
+            # common equity = assets - liabilities, floored strictly positive
+            common_equity = max(0.05 * assets, assets - total_liabilities)
+            # keep the identity assets >= liabilities + equity-floor honest:
+            total_liabilities = min(total_liabilities, assets - common_equity)
+
+            current_assets = assets * float(np.clip(0.40 + rng.normal(0.0, 0.05), 0.05, 0.90))
+            cash = current_assets * float(np.clip(0.30 + 0.05 * ql + rng.normal(0.0, 0.05), 0.02, 0.95))
+            receivables = current_assets * float(np.clip(0.25 + rng.normal(0.0, 0.04), 0.02, 0.80))
+            inventory = max(0.0, current_assets - cash - receivables) * float(np.clip(0.6 + rng.normal(0.0, 0.1), 0.0, 1.0))
+            current_liabilities = current_debt + accounts_payable_share(rng, current_assets)
+            accounts_payable = current_liabilities - current_debt
+            retained_earnings = common_equity * float(np.clip(0.55 + 0.10 * ql + rng.normal(0.0, 0.05), 0.0, 0.95))
+
+            # ----- below-EBIT income -----
+            interest_expense = total_debt * (0.06 / 4.0) * float(np.clip(1.0 + rng.normal(0.0, 0.1), 0.3, 2.0))
+            # A LARGE, quality-INDEPENDENT non-operating line (one-offs, gains/losses,
+            # variable tax). This deliberately swamps the quality content of bottom-line
+            # earnings, so the price-ratio VALUE factors (E/P, FCF yield) that use
+            # net_income / op_cash_flow stay ~scale-free NOISE — not a planted edge.
+            # The OPERATING ratios (gross profitability, margin) keep their clean quality
+            # signal because they sit ABOVE this noisy line.
+            nonop = ebit * float(rng.normal(0.0, 0.60))
+            pretax = ebit - interest_expense + nonop
+            net_income = pretax * (1.0 - 0.21)  # flat 21% tax wedge; can be negative
+
+            # ----- cash flow: NI + D&A-like wedge; accruals SHRINK with quality -----
+            dep = assets * (0.05 / 4.0)  # depreciation add-back, ~5% of assets annually
+            # accrual wedge (NI - OCF) is smaller (more negative OCF gap) for low quality:
+            accrual = revenue * float(np.clip(0.02 - 0.02 * ql + rng.normal(0.0, 0.01), -0.10, 0.10))
+            op_cash_flow = net_income + dep - accrual
+            capex = revenue * float(np.clip(0.06 + rng.normal(0.0, 0.01), 0.0, 0.40))
+
+            fields = {
+                "revenue": revenue,
+                "cogs": cogs,
+                "gross_profit": gross_profit,
+                "sga": sga,
+                "rnd": rnd,
+                "ebit": ebit,
+                "interest_expense": interest_expense,
+                "net_income": net_income,
+                "shares_diluted": shares[j],
+                "total_assets": assets,
+                "current_assets": current_assets,
+                "cash": cash,
+                "receivables": receivables,
+                "inventory": inventory,
+                "current_liabilities": current_liabilities,
+                "accounts_payable": accounts_payable,
+                "current_debt": current_debt,
+                "long_term_debt": long_term_debt,
+                "total_liabilities": total_liabilities,
+                "common_equity": common_equity,
+                "retained_earnings": retained_earnings,
+                "op_cash_flow": op_cash_flow,
+                "capex": capex,
+            }
+            for metric, value in fields.items():
+                rows.append((sym, pe, avail, metric, float(value)))
+    return pd.DataFrame(rows, columns=["symbol", "period_end", "available_date", "metric", "value"])
+
+
+def accounts_payable_share(rng: np.random.Generator, current_assets: float) -> float:
+    """Helper: a plausible accounts-payable level as a share of current assets."""
+    return current_assets * float(np.clip(0.20 + rng.normal(0.0, 0.04), 0.02, 0.60))
