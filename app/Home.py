@@ -23,6 +23,7 @@ import plotly.graph_objects as go
 import streamlit as st
 
 from api.service import DISCLAIMER, WorkflowError, run_backtest_workflow
+from research.trial_ledger import TrialLedger
 
 API_URL = os.environ.get("ALPHAFORGE_API", "http://127.0.0.1:8000")
 
@@ -67,13 +68,25 @@ def api_is_up(retries: int = 3) -> bool:
 
 def run_request(payload: dict) -> dict:
     if st.session_state.get("api_mode"):
-        r = httpx.post(f"{API_URL}/backtest", json=payload, timeout=180.0)
+        # carry the af_session cookie so the SERVER-side trial ledger accumulates
+        # per workspace across runs (the haircut is enforced server-side).
+        r = httpx.post(f"{API_URL}/backtest", json=payload, timeout=180.0,
+                       cookies=st.session_state.get("af_cookies", {}))
+        # The server sends Set-Cookie ONLY when it mints a session; later responses
+        # carry none. Merge non-empty cookies and never clobber a good one with {},
+        # or the per-workspace ledger silently resets after the first run.
+        _new = dict(r.cookies)
+        if _new:
+            st.session_state["af_cookies"] = {**st.session_state.get("af_cookies", {}), **_new}
         if r.status_code != 200:
             raise WorkflowError(r.json().get("detail", f"API error {r.status_code}"))
         return r.json()
-    return run_backtest_workflow(payload)
+    # in-process mode: the UI owns the ledger and enforcement happens here.
+    return run_backtest_workflow(payload, ledger=st.session_state["ledger"])
 
 
+if "ledger" not in st.session_state:
+    st.session_state["ledger"] = TrialLedger()
 if "api_mode" not in st.session_state:
     st.session_state["api_mode"] = False if SHOT_MODE else api_is_up()
 
@@ -97,6 +110,25 @@ if SHOT_MODE and "result" not in st.session_state:
 # ----------------------------- sidebar -----------------------------
 with st.sidebar:
     st.header("Workflow")
+    _led = st.session_state["ledger"]
+    _ta_now = (st.session_state.get("result") or {}).get("trial_audit") or {}
+    _distinct = _ta_now.get("distinct_count")
+    if _distinct is None:
+        _distinct = _led.distinct_count
+    st.metric("Distinct strategies run", _distinct,
+              help="The engine deflates the Sharpe by AT LEAST this many trials, no matter "
+                   "what you type below. Honest counting is the whole point.")
+    if st.button("Reset counter", use_container_width=True):
+        if st.session_state.get("api_mode"):
+            try:
+                httpx.post(f"{API_URL}/session/reset",
+                           cookies=st.session_state.get("af_cookies", {}), timeout=10.0)
+            except Exception:
+                pass
+        _led.reset()
+        st.session_state.pop("result", None)
+        st.rerun()
+    st.divider()
     provider = st.radio("Data source", ["synthetic", "yfinance"],
                         help="Synthetic = offline, deterministic engine demo. "
                              "Yahoo Finance = real (survivorship-biased!) free data.")
@@ -159,10 +191,20 @@ oos, wf, tails = res["out_of_sample"], res["walk_forward"], res["fat_tails"]
 # ----------------------------- verdict -----------------------------
 credible = res["verdict"].startswith("CREDIBLE")
 wf_dsr = wf.get("deflated_sr") if "error" not in wf else None
+_folds = wf.get("n_splits") if "error" not in wf else None
+_ta = res.get("trial_audit") or {}
+# the full-sample DSR is deflated by the trial-ledger count; the OOS walk-forward
+# DSR is deflated by folds-as-trials — two DISTINCT haircuts, kept visibly separate.
+_trial_word = "ledger-enforced" if _ta.get("distinct_count") is not None else "declared"
 (st.success if credible else st.error)(f"**{res['verdict']}**  \n"
-    f"(Deflated Sharpe: full-sample {fmt(card['deflated_sr'], '.3f')} vs. "
-    f"out-of-sample walk-forward {fmt(wf_dsr, '.3f')}, at {meta['n_trials']} declared trials; "
-    f"naive in-sample PSR = {fmt(card['psr_vs_0'], '.3f')} — the gaps are the honesty haircuts)")
+    f"(full-sample Deflated Sharpe {fmt(card['deflated_sr'], '.3f')} — deflated by "
+    f"{meta['n_trials']} {_trial_word} trial(s); out-of-sample walk-forward "
+    f"{fmt(wf_dsr, '.3f')} — deflated by {fmt(_folds, '.0f') if _folds else 'n/a'} folds; "
+    f"naive in-sample PSR {fmt(card['psr_vs_0'], '.3f')}. The gaps are the honesty haircuts.)")
+if _ta.get("haircut_was_raised"):
+    st.warning(f"You declared {_ta['declared_n_trials']} trial(s), but this workspace has run "
+               f"{_ta['effective_n_trials']} distinct strategies — the Deflated Sharpe uses the "
+               f"larger, honest number. Reset the counter (sidebar) to start a fresh search.")
 
 st.caption(f"{meta['n_symbols']} symbols × {meta['n_days']} days "
            f"({meta['start_date']} → {meta['end_date']}) · factor: {meta['factor']} "
@@ -213,6 +255,9 @@ with b:
         st.write(f"Stitched OOS Sharpe: **{fmt(wf['stitched_oos_sharpe'], '+.3f')}**")
         st.write(f"Deflated SR (folds-as-trials): **{fmt(wf['deflated_sr'], '.3f')}**")
         st.write("🟢 passes" if wf["passes"] else "🔴 does not pass")
+        st.caption(f"Purged at fold boundaries: {wf.get('total_purged_bars', 0)} bars "
+                   f"(purge {wf.get('purge_bars', 0)} + embargo {wf.get('embargo_bars', 0)}) — "
+                   f"no lookback leak into out-of-sample.")
 with c:
     st.subheader("Tail risk")
     st.write(f"Skew: **{fmt(tails.get('skew'), '+.2f')}** · "
@@ -221,6 +266,10 @@ with c:
     st.write(("🟢 returns ≈ Normal" if tails.get("returns_are_normal")
               else "🔴 FAT TAILS — Gaussian VaR understates risk"))
     st.caption(tails.get("verdict", ""))
+    st.write(f"CVaR 95%: **{fmt(card.get('cvar_95'), '.2%')}** · "
+             f"CVaR 99%: **{fmt(card.get('cvar_99'), '.2%')}** _(historical, per-day loss)_")
+    if card.get("cvar_verdict"):
+        st.caption(card["cvar_verdict"])
 
 sigq = res.get("signal_quality") or {}
 if sigq:
@@ -239,8 +288,39 @@ if sigq:
     st.caption("IC = cross-sectional rank correlation between the signal today and the return that "
                "follows it. A credible backtest should rest on a signal with a real, significant IC.")
 
+pbo = res.get("pbo") or {}
+if pbo and "error" not in pbo and not pbo.get("insufficient"):
+    st.subheader("Probability of Backtest Overfitting (PBO)")
+    p1, p2 = st.columns([1, 2])
+    with p1:
+        st.metric("PBO", fmt(pbo.get("pbo"), ".0%"))
+        st.write("🟢 robust" if not pbo.get("overfit") else "🔴 overfit risk")
+        st.caption(pbo.get("verdict", ""))
+    with p2:
+        hist = pbo.get("histogram") or {}
+        edges, counts = hist.get("edges") or [], hist.get("counts") or []
+        if counts and len(edges) == len(counts) + 1:
+            centers = [round((edges[i] + edges[i + 1]) / 2, 3) for i in range(len(counts))]
+            figp = go.Figure(go.Bar(x=centers, y=counts))
+            figp.add_vline(x=0.0, line_dash="dash", line_color="#888")
+            figp.update_layout(
+                title="OOS rank-logit of the in-sample-best config across CSCV splits "
+                      "(mass left of 0 = below-median out-of-sample = overfit)",
+                xaxis_title="logit(out-of-sample rank)",
+                height=300, margin=dict(l=10, r=10, t=55, b=10))
+            st.plotly_chart(figp, use_container_width=True)
+    st.caption("PBO = the fraction of combinatorial splits where the best in-sample config lands in "
+               "the LOSING half out-of-sample (logit ≤ 0). > 50% means the search is overfitting itself.")
+elif pbo.get("insufficient"):
+    st.caption(f"PBO: n/a — {pbo.get('note') or 'insufficient data for CSCV'}")
+elif pbo.get("error"):
+    st.caption(f"PBO: n/a — {pbo['error']}")
+
 with st.expander("Full scorecard"):
-    st.dataframe(pd.DataFrame([card]).T.rename(columns={0: "value"}), use_container_width=True)
+    # cast to str: the scorecard mixes floats with text (e.g. cvar_verdict), which
+    # a single Arrow column can't hold — stringifying keeps the debug table honest.
+    _scoredf = pd.DataFrame([card]).T.rename(columns={0: "value"})
+    st.dataframe(_scoredf.astype(str), use_container_width=True)
 
 st.divider()
 st.caption(f"⚖️ {DISCLAIMER}")

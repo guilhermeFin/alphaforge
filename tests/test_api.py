@@ -5,6 +5,11 @@ from fastapi.testclient import TestClient
 from api.main import app
 from api.service import WorkflowError, run_backtest_workflow, _downsample_curve
 
+# NOTE: this module-level client keeps ONE cookie jar, so every test using it shares
+# ONE server-side trial ledger (distinct_count accumulates across calls in order).
+# That's fine for tests pinning ledger-INDEPENDENT values (ann_sharpe, verdict, key
+# presence). Any test pinning deflated_sr / meta['n_trials'] MUST use a fresh
+# TestClient(app) so it starts from a clean ledger.
 client = TestClient(app)
 
 
@@ -56,11 +61,18 @@ def test_validation_errors_are_400():
 
 
 def test_service_matches_api_numbers():
-    """The Streamlit direct-import fallback must produce identical numbers."""
+    """The Streamlit direct-import fallback must produce identical numbers — including
+    the ledger-touched ones. Use a FRESH client so the API call starts a clean ledger
+    (distinct_count=1); with declared n_trials=10 the enforced floor is 10 on BOTH the
+    API and the stateless direct path, so even deflated_sr / meta n_trials must match."""
     req = _small_req()
-    via_api = client.post("/backtest", json=req).json()
+    c = TestClient(app)
+    via_api = c.post("/backtest", json=req).json()
     direct = run_backtest_workflow(req)
     assert via_api["scorecard"]["ann_sharpe"] == direct["scorecard"]["ann_sharpe"]
+    assert via_api["scorecard"]["deflated_sr"] == direct["scorecard"]["deflated_sr"]
+    assert via_api["meta"]["n_trials"] == direct["meta"]["n_trials"] == 10
+    assert via_api["meta"]["declared_n_trials"] == 10
     assert via_api["verdict"] == direct["verdict"]
 
 
@@ -129,6 +141,77 @@ def test_fundamental_factor_rejects_yfinance():
     r = client.post("/backtest", json=_small_req(factor="quality", provider="yfinance",
                                                  symbols=["AAPL", "MSFT"]))
     assert r.status_code in (400, 422)
+
+
+def test_response_includes_pbo_and_cvar():
+    body = client.post("/backtest", json=_small_req(factor="momentum", periods=800)).json()
+    assert "pbo" in body and "trial_audit" in body
+    # CVaR/ES flow through summarize() into the scorecard
+    assert {"var_95", "cvar_95", "cvar_99"} <= body["scorecard"].keys()
+    # technical factor -> PBO is computed (not the fundamental n/a path)
+    pbo = body["pbo"]
+    assert "error" not in pbo, pbo
+    assert 0.0 <= pbo["pbo"] <= 1.0
+    assert "histogram" in pbo
+    assert "NaN" not in client.post("/backtest", json=_small_req(periods=800)).text
+
+
+def test_pbo_grid_distinct_for_capped_factors():
+    # reversal caps lookback at 63 and lowvol at 252 inside _score; the grid is built
+    # in EFFECTIVE space so it must still yield >= 2 DISTINCT configs (not identical
+    # clones that would manufacture a bogus 'overfit' verdict).
+    for f in ("reversal", "lowvol"):
+        body = client.post("/backtest", json=_small_req(factor=f, periods=900, lookback=252)).json()
+        pbo = body["pbo"]
+        assert "error" not in pbo, (f, pbo)
+        assert 0.0 <= pbo["pbo"] <= 1.0
+
+
+def test_pbo_is_na_for_fundamental_factors():
+    body = client.post("/backtest", json=_small_req(factor="quality", periods=900)).json()
+    assert "error" in body["pbo"]  # grid not wired for fundamentals yet (honest n/a)
+
+
+def test_walk_forward_reports_purge():
+    # long enough that purging doesn't eat a fold -> real walk-forward with audit
+    body = client.post("/backtest", json=_small_req(factor="momentum", periods=1512,
+                                                    lookback=126, skip=21)).json()
+    wf = body["walk_forward"]
+    if "error" not in wf:
+        assert wf["purge_bars"] == 147  # lookback(126) + skip(21)
+        assert wf["embargo_bars"] == 1
+        assert wf["total_purged_bars"] == sum(wf["purged_bars_per_fold"]) > 0
+
+
+def test_trial_ledger_floor_raises_haircut():
+    # fresh client => isolated cookie => isolated server-side ledger
+    c = TestClient(app)
+    for lb in (80, 100, 120):
+        c.post("/backtest", json=_small_req(factor="momentum", lookback=lb, n_trials=1))
+    ta = c.post("/backtest", json=_small_req(factor="momentum", lookback=140, n_trials=1)).json()["trial_audit"]
+    assert ta["declared_n_trials"] == 1
+    assert ta["distinct_count"] >= 4
+    assert ta["effective_n_trials"] == ta["distinct_count"]   # floor enforced
+    assert ta["haircut_was_raised"] is True
+
+
+def test_rerun_same_config_does_not_inflate_distinct():
+    c = TestClient(app)
+    a = c.post("/backtest", json=_small_req(lookback=111, n_trials=1)).json()
+    b = c.post("/backtest", json=_small_req(lookback=111, n_trials=1)).json()
+    assert a["trial_audit"]["distinct_count"] == 1
+    assert b["trial_audit"]["distinct_count"] == 1   # identical config is not a new trial
+    assert b["trial_audit"]["total_runs"] == 2
+
+
+def test_session_reset_zeros_ledger():
+    c = TestClient(app)
+    c.post("/backtest", json=_small_req(lookback=90, n_trials=1))
+    c.post("/backtest", json=_small_req(lookback=110, n_trials=1))
+    entry = c.post("/session/reset", params={"reason": "test"}).json()
+    assert entry["discarded_distinct"] == 2
+    after = c.post("/backtest", json=_small_req(lookback=130, n_trials=1)).json()
+    assert after["trial_audit"]["distinct_count"] == 1   # counting restarted
 
 
 def test_response_includes_signal_quality():

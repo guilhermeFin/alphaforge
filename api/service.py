@@ -15,9 +15,10 @@ from typing import Any
 import numpy as np
 import pandas as pd
 
-from research import data, factors, fundamentals, signal_quality, stats_guards
+from research import data, factors, fundamentals, signal_quality, stats_guards, overfitting
 from research.backtest import backtest
 from research.walkforward import split_backtest, walk_forward
+from research.trial_ledger import TrialLedger
 
 DISCLAIMER = (
     "AlphaForge is research software, not investment advice. Backtests are "
@@ -127,6 +128,41 @@ def _score(close: pd.DataFrame, factor: str, lookback: int, skip: int) -> pd.Dat
     )
 
 
+def _compute_pbo(close: pd.DataFrame, p: dict) -> dict:
+    """Probability of Backtest Overfitting via CSCV over a small lookback grid —
+    the configs a user would realistically sweep. Technical factors only in this
+    MVP (the fundamental scoring path differs). Always returns a dict; on any
+    failure (short series, degenerate grid) it reports an honest n/a, never raises.
+    """
+    if p["factor"] in FUNDAMENTAL_FACTORS:
+        return {"error": "PBO grid not wired for fundamental factors yet"}
+    lb, sk, factor, gross = p["lookback"], p["skip"], p["factor"], p["gross"]
+
+    # Build the grid in EFFECTIVE-lookback space. _score caps the lookback inside
+    # the factor (reversal -> 63, lowvol -> 252), so a raw-lookback grid would map
+    # several points to the SAME effective window -> identical return columns ->
+    # a degenerate CSCV that manufactures a false "overfit" verdict. Centre the
+    # sweep on the effective lookback and respect the factor's cap so every config
+    # is genuinely distinct.
+    base = _effective_lookback(factor, lb)
+    cap = {"reversal": 63, "lowvol": 252}.get(factor, 756)
+    grid = sorted({min(cap, max(5, int(round(base * f))))
+                   for f in (0.4, 0.6, 0.8, 1.0, 1.3)})
+    param_grid = [{"lookback": g} for g in grid]
+    if len(param_grid) < 2:
+        return {"error": "PBO grid degenerate for this factor (fewer than 2 distinct configs)"}
+
+    def weight_fn(c, lookback):
+        return factors.long_short_weights(
+            _score(c, factor, lookback, min(sk, lookback - 1)), gross=gross)
+
+    try:
+        return overfitting.pbo_from_factor_grid(
+            close, weight_fn, param_grid, cost_bps=p["cost_bps"], n_splits=8)
+    except Exception as e:  # noqa: BLE001 - honest n/a beats a crashed workflow
+        return {"error": f"{type(e).__name__}: {e}"}
+
+
 def _jsonable(obj: Any) -> Any:
     """Recursively convert numpy/pandas scalars to plain JSON-safe Python."""
     if isinstance(obj, dict):
@@ -163,8 +199,14 @@ def _downsample_curve(s: pd.Series, max_points: int = 500) -> list[dict]:
             for idx, v in sub.items()]
 
 
-def run_backtest_workflow(req: dict) -> dict:
-    """Validate -> load data -> factor -> honest backtest -> full verdict dict."""
+def run_backtest_workflow(req: dict, ledger: "TrialLedger | None" = None) -> dict:
+    """Validate -> load data -> factor -> honest backtest -> full verdict dict.
+
+    ``ledger`` (optional) is a per-workspace TrialLedger: when supplied, the engine
+    counts DISTINCT strategy configs and enforces the multiple-testing haircut
+    FLOOR on the full-sample Deflated Sharpe (declared n_trials can be raised, never
+    used to under-deflate). No ledger => stateless, declared n_trials used as-is.
+    """
     p = _validate(req)
 
     if p["factor"] in FUNDAMENTAL_FACTORS:
@@ -211,13 +253,41 @@ def run_backtest_workflow(req: dict) -> dict:
     weights = factors.long_short_weights(score, gross=p["gross"])
     res = backtest(close, weights, cost_bps=p["cost_bps"])
 
+    # Trial ledger: count DISTINCT configs this workspace has run and ENFORCE the
+    # multiple-testing haircut FLOOR on the full-sample Deflated Sharpe. The declared
+    # n_trials can only be raised by the engine, never used to under-deflate.
+    declared_trials = p["n_trials"]
+    if ledger is not None:
+        rec = ledger.record(req)
+        eff_trials = ledger.effective_n_trials(declared_trials)
+    else:
+        rec, eff_trials = None, declared_trials
+    trial_audit = {
+        "declared_n_trials": declared_trials,
+        "effective_n_trials": eff_trials,
+        "haircut_was_raised": bool(eff_trials > declared_trials),
+    }
+    if ledger is not None:
+        trial_audit.update(rec or {})
+        trial_audit.update(ledger.snapshot())
+
     sigq = signal_quality.compact_scorecard(score, close)  # is the SIGNAL itself predictive?
-    scorecard = res.summary(n_trials=p["n_trials"])
+    scorecard = res.summary(n_trials=eff_trials)
     oos = split_backtest(close, weights, split=0.7, cost_bps=p["cost_bps"])
+
+    # Walk-forward with purge + embargo at fold boundaries: a factor's lookback can
+    # otherwise leak prior-fold prices into the first OOS bars of each fold. Purge =
+    # the bars of history the signal needs (lookback + skip); fundamental factors
+    # have no rolling price lookback (purge 0, small embargo).
+    purge = (0 if p["factor"] in FUNDAMENTAL_FACTORS
+             else _effective_lookback(p["factor"], p["lookback"]) + p["skip"])
     try:
-        wf = walk_forward(close, weights, n_splits=5, cost_bps=p["cost_bps"])
+        wf = walk_forward(close, weights, n_splits=5, cost_bps=p["cost_bps"],
+                          purge_bars=int(purge), embargo_bars=1)
     except ValueError as e:
         wf = {"error": str(e)}
+
+    pbo = _compute_pbo(close, p)  # CSCV Probability of Backtest Overfitting
     tails = stats_guards.fat_tail_report(res.returns)
 
     # Headline verdict is OUT-OF-SAMPLE first. A strategy that only passes the
@@ -243,6 +313,8 @@ def run_backtest_workflow(req: dict) -> dict:
     return _jsonable({
         "meta": {
             **p,
+            "n_trials": eff_trials,  # ENFORCED count (>= declared) so the verdict caption is honest
+            "declared_n_trials": declared_trials,  # what the user submitted (always present)
             "effective_lookback": (None if p["factor"] in FUNDAMENTAL_FACTORS
                                    else _effective_lookback(p["factor"], p["lookback"])),
             "n_symbols": int(close.shape[1]),
@@ -258,6 +330,8 @@ def run_backtest_workflow(req: dict) -> dict:
         "signal_quality": sigq,
         "out_of_sample": oos,
         "walk_forward": wf,
+        "pbo": pbo,
+        "trial_audit": trial_audit,
         "fat_tails": tails,
         "equity_curve": _downsample_curve(res.equity),
         "drawdown_curve": _downsample_curve(dd),
