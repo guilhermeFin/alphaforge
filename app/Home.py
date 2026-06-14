@@ -91,7 +91,8 @@ if "api_mode" not in st.session_state:
     st.session_state["api_mode"] = False if SHOT_MODE else api_is_up()
 
 if not SHOT_MODE:
-    mode_label = (f"connected to API at {API_URL}" if st.session_state["api_mode"]
+    mode_label = (f"connected to API — interactive docs at {API_URL}/docs"
+                  if st.session_state["api_mode"]
                   else "API not detected — running the engine in-process (same code path)")
     st.info(f"Mode: {mode_label}", icon="🔌")
 

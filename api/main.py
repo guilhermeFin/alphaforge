@@ -69,6 +69,15 @@ def _get_ledger(request: Request, response: Response) -> TrialLedger:
     return _LEDGERS[sid]
 
 
+@app.get("/")
+def root() -> dict:
+    """Friendly root so the bare URL doesn't look like a 404. The UI lives on the
+    Streamlit port (8501); this is the JSON API."""
+    return {"service": "AlphaForge API", "ui": "the Streamlit app (port 8501)",
+            "interactive_docs": "/docs", "health": "/health",
+            "backtest": "POST /backtest", "disclaimer": DISCLAIMER}
+
+
 @app.get("/health")
 def health() -> dict:
     return {"status": "ok", "engine_version": "0.0.1", "disclaimer": DISCLAIMER}
