@@ -169,6 +169,69 @@ def extraction_stability(repeats) -> dict:
             "deterministic": bool(per_item_std.max() < 1e-9)}
 
 
+def ic_sign_stability(signal, close, horizon: int = 1, method: str = "spearman",
+                      n_windows: int = 6, min_obs_per_window: int = 10) -> dict:
+    """Does the edge survive across eras, or is a positive full-sample IC just an
+    average over a regime flip?
+
+    Splits the per-date IC series into ``n_windows`` contiguous, roughly equal eras
+    and asks how many of those eras share the SIGN of the full-sample mean IC. A
+    signal whose IC is, say, strongly + in the first half and strongly - in the
+    second can post a respectable full-sample mean while being worthless (or worse)
+    going forward. ``sign_consistency`` is the fraction of eras that agree with the
+    full-sample sign; ``stable`` requires >= 0.80 agreement.
+
+    On a thin IC series (n < n_windows * min_obs_per_window) we REFUSE to render a
+    confident verdict: ``stable`` is None and the verdict says "insufficient". A
+    too-short series must never be reported as a confident True/False.
+    """
+    ic = ic_series(signal, close, horizon, method)
+    n = int(ic.size)
+
+    # Too little data to honestly judge era-by-era stability.
+    if n < n_windows * min_obs_per_window:
+        return {
+            "n_windows": n_windows,
+            "era_mean_ics": [round(float(v), 4) for v in ic.to_numpy()] if n else [],
+            "sign_consistency": None,
+            "dominant_sign": 0,
+            "stable": None,
+            "verdict": (f"INSUFFICIENT DATA: only {n} IC observations "
+                        f"(need >= {n_windows * min_obs_per_window}) to judge "
+                        f"sign stability across {n_windows} eras"),
+        }
+
+    eras = np.array_split(ic.to_numpy(dtype=float), n_windows)
+    era_means = np.array([float(np.mean(e)) for e in eras])
+
+    full_sign = int(np.sign(float(ic.mean())))
+    if full_sign == 0:
+        # Full-sample mean IC is exactly zero — fall back to the sign of the era
+        # means, defaulting to +1 if that is also zero.
+        full_sign = int(np.sign(float(np.mean(era_means)))) or 1
+
+    consistency = float(np.mean(np.sign(era_means) == full_sign))
+    stable = bool(consistency >= 0.80)
+
+    if stable:
+        verdict = (f"STABLE: {consistency:.0%} of {n_windows} eras share the "
+                   f"full-sample IC sign ({'+' if full_sign > 0 else '-'}) — "
+                   f"the edge persists across regimes")
+    else:
+        verdict = (f"UNSTABLE: only {consistency:.0%} of {n_windows} eras share the "
+                   f"full-sample IC sign — the positive full-sample IC may be "
+                   f"averaging over a regime flip")
+
+    return {
+        "n_windows": n_windows,
+        "era_mean_ics": [round(float(v), 4) for v in era_means],
+        "sign_consistency": round(consistency, 3),
+        "dominant_sign": full_sign,
+        "stable": stable,
+        "verdict": verdict,
+    }
+
+
 def scorecard(signal, close, horizons=(1, 5, 10, 21, 63), method: str = "spearman",
               split: float = 0.7, with_quantiles: bool = True) -> dict:
     """Full signal-quality verdict. A signal is 'predictive' only if its IC is
@@ -178,23 +241,35 @@ def scorecard(signal, close, horizons=(1, 5, 10, 21, 63), method: str = "spearma
     cut = int(len(close) * split)
     is_ic = ic_summary(signal.iloc[:cut], close.iloc[:cut], 1, method)
     oos_ic = ic_summary(signal.iloc[cut:], close.iloc[cut:], 1, method)
+    sign_stab = ic_sign_stability(signal, close, 1, method)
 
     t = head.get("ic_tstat")
     is_m, oos_m = is_ic.get("mean_ic"), oos_ic.get("mean_ic")
+    stable = sign_stab.get("stable")
     predictive = bool(
         t is not None and abs(t) > 2.0
         and is_m is not None and oos_m is not None
         and np.sign(is_m) == np.sign(oos_m) and abs(oos_m) > 0.0
+        # A too-short IC series (stable is None) must NOT block an otherwise-passing
+        # signal; only a confirmed regime flip (stable is False) does.
+        and (stable is True or stable is None)
     )
-    verdict = ("PREDICTIVE: IC is significant and holds its sign out-of-sample"
-               if predictive else
-               "NOT PREDICTIVE: IC is not significant or flips out-of-sample")
+    if predictive:
+        verdict = "PREDICTIVE: IC is significant and holds its sign out-of-sample"
+    elif (t is not None and abs(t) > 2.0 and is_m is not None and oos_m is not None
+          and np.sign(is_m) == np.sign(oos_m) and abs(oos_m) > 0.0 and stable is False):
+        verdict = ("NOT PREDICTIVE: IC is significant in/out-of-sample but its sign "
+                   "flips across eras — the full-sample IC is averaging over a "
+                   "regime flip")
+    else:
+        verdict = "NOT PREDICTIVE: IC is not significant or flips out-of-sample"
 
     out = {
         "headline_ic": head,
         "ic_decay": decay,
         "in_sample_ic": is_ic.get("mean_ic"),
         "out_sample_ic": oos_ic.get("mean_ic"),
+        "ic_sign_stability": sign_stab,
         "rank_autocorr": rank_autocorrelation(signal),
         "coverage": coverage(signal),
         "predictive": predictive,
@@ -209,6 +284,7 @@ def compact_scorecard(signal, close, method: str = "spearman") -> dict:
     """Lightweight version for the API response (3-horizon decay, no quantiles)."""
     head = ic_summary(signal, close, 1, method)
     decay = ic_decay(signal, close, (1, 5, 21), method)
+    sign_stab = ic_sign_stability(signal, close, 1, method)
     t = head.get("ic_tstat")
     return {
         "mean_ic": head.get("mean_ic"),
@@ -219,4 +295,8 @@ def compact_scorecard(signal, close, method: str = "spearman") -> dict:
         "coverage": coverage(signal),
         "rank_autocorr": rank_autocorrelation(signal),
         "significant": bool(t is not None and abs(t) > 2.0),
+        # Sign-stability across eras — flat keys are what the API/UI reads.
+        "ic_sign_consistency": sign_stab.get("sign_consistency"),
+        "ic_sign_stable": sign_stab.get("stable"),
+        "ic_sign_verdict": sign_stab.get("verdict"),
     }

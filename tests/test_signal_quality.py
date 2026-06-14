@@ -59,3 +59,52 @@ def test_compact_scorecard_keys():
     c = sq.compact_scorecard(q, close)
     for k in ("mean_ic", "ic_tstat", "ic_ir", "ic_decay", "coverage", "significant"):
         assert k in c
+
+
+def test_ic_sign_stability_stable_signal():
+    # A genuinely predictive signal (quality factor) should keep its IC sign across
+    # essentially every era -> high consistency, stable True.
+    close, q = _world_quality()
+    res = sq.ic_sign_stability(q, close, n_windows=6, min_obs_per_window=10)
+    assert res["stable"] is True
+    assert res["sign_consistency"] >= 0.80
+    assert res["dominant_sign"] in (1, -1)
+    assert len(res["era_mean_ics"]) == 6
+
+
+def test_ic_sign_stability_flips_halfway():
+    # Construct a signal whose edge reverses at the midpoint: in the first half it
+    # equals the forward return (IC ~ +1), in the second half its negation (IC ~ -1).
+    # The full-sample IC averages near zero and the per-era signs disagree -> unstable.
+    close, _ = _world_quality()
+    fwd = sq._forward_return(close, 1)
+    flip = fwd.copy()
+    half = len(close) // 2
+    flip.iloc[half:] = -fwd.iloc[half:]
+    res = sq.ic_sign_stability(flip, close, n_windows=6, min_obs_per_window=10)
+    assert res["stable"] is False
+    assert res["sign_consistency"] < 0.80
+    assert "regime flip" in res["verdict"]
+
+
+def test_ic_sign_stability_short_series_is_none():
+    # A panel far too short to produce n_windows * min_obs_per_window IC obs must
+    # return stable=None (never a confident False) and an "insufficient" verdict.
+    panel = data.make_synthetic_panel([f"S{i}" for i in range(8)], periods=25, seed=3)
+    close = panel.close
+    rng = np.random.default_rng(3)
+    sig = pd.DataFrame(rng.standard_normal(close.shape), index=close.index, columns=close.columns)
+    res = sq.ic_sign_stability(sig, close, n_windows=6, min_obs_per_window=10)
+    assert res["stable"] is None
+    assert res["sign_consistency"] is None
+    assert "INSUFFICIENT" in res["verdict"].upper()
+
+
+def test_compact_scorecard_exposes_sign_stability_keys():
+    close, q = _world_quality()
+    c = sq.compact_scorecard(q, close)
+    for k in ("ic_sign_consistency", "ic_sign_stable", "ic_sign_verdict"):
+        assert k in c
+    # On the genuinely predictive quality factor the flat stable flag is True.
+    assert c["ic_sign_stable"] is True
+    assert isinstance(c["ic_sign_verdict"], str)
