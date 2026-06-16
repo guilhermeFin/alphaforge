@@ -12,7 +12,21 @@ def test_security_headers_present_on_every_response():
     assert h.get("x-content-type-options") == "nosniff"
     assert h.get("x-frame-options") == "DENY"
     assert h.get("referrer-policy") == "no-referrer"
+    assert h.get("cache-control") == "no-store"
     assert "default-src 'none'" in h.get("content-security-policy", "")
+
+
+def test_request_id_header_present():
+    rid = client.get("/health").headers.get("x-request-id")
+    assert rid and len(rid) >= 16
+
+
+def test_unknown_field_is_rejected_422():
+    # extra='forbid' blocks mass-assignment / unknown-field injection
+    r = client.post("/backtest", json={"provider": "synthetic", "factor": "momentum",
+                                       "periods": 400, "lookback": 126, "skip": 21,
+                                       "n_trials": 5, "seed": 1, "is_admin": True})
+    assert r.status_code == 422
 
 
 def test_oversized_body_is_rejected_413():
@@ -33,7 +47,10 @@ def test_rate_limiter_trips_when_enabled(monkeypatch):
     c = TestClient(main.app)
     assert c.get("/health").status_code == 200
     assert c.get("/health").status_code == 200
-    assert c.get("/health").status_code == 429   # 3rd within the window is throttled
+    r = c.get("/health")
+    assert r.status_code == 429   # 3rd within the window is throttled
+    assert r.headers.get("retry-after") == "60"
+    assert r.headers.get("x-ratelimit-limit") == "2"
 
 
 def test_rate_limiter_off_by_default():

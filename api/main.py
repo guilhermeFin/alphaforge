@@ -21,7 +21,7 @@ sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent.parent))  # repo 
 from uuid import uuid4  # noqa: E402
 
 from fastapi import FastAPI, HTTPException, Request, Response  # noqa: E402
-from pydantic import BaseModel, Field  # noqa: E402
+from pydantic import BaseModel, ConfigDict, Field  # noqa: E402
 
 from api.service import (  # noqa: E402
     DISCLAIMER, FACTORS, PROVIDERS, WorkflowError, run_backtest_workflow,
@@ -40,8 +40,11 @@ install_security(app)  # CORS lockdown + security headers + body cap + optional 
 
 
 class BacktestRequest(BaseModel):
+    # reject unknown fields outright (mass-assignment / unknown-field injection guard)
+    model_config = ConfigDict(extra="forbid")
+
     provider: str = Field("synthetic", description=f"one of {PROVIDERS}")
-    symbols: list[str] = Field(default_factory=list,
+    symbols: list[str] = Field(default_factory=list, max_length=64,
                                description="tickers (required for yfinance; optional for synthetic)")
     factor: str = Field("momentum", description=f"one of {FACTORS}")
     lookback: int = Field(252, ge=5, le=756)
@@ -56,9 +59,12 @@ class BacktestRequest(BaseModel):
     start: str = Field("2015-01-02")
 
 
-# Per-workspace trial ledgers, keyed by a signed-ish session cookie. A single
-# global ledger would conflate users (one person's sweep would haircut a
-# stranger's first run); a cookie scopes it to one browser session.
+# Per-workspace trial ledgers, keyed by a session cookie. A single global ledger
+# would conflate users (one person's sweep would haircut a stranger's first run);
+# a cookie scopes it to one browser session. Bounded so an unauthenticated caller
+# minting endless cookies can't grow it without limit (memory-DoS guard); evicts
+# the oldest session when full. (Real durable per-user state lands with accounts.)
+MAX_SESSIONS = 10_000
 _LEDGERS: dict[str, TrialLedger] = {}
 
 
@@ -66,6 +72,8 @@ def _get_ledger(request: Request, response: Response) -> TrialLedger:
     sid = request.cookies.get("af_session")
     if not sid or sid not in _LEDGERS:
         sid = uuid4().hex
+        if len(_LEDGERS) >= MAX_SESSIONS:
+            _LEDGERS.pop(next(iter(_LEDGERS)))  # evict oldest (insertion-ordered)
         _LEDGERS[sid] = TrialLedger()
         response.set_cookie("af_session", sid, max_age=8 * 3600,
                             httponly=True, samesite="lax", secure=secure_cookies())

@@ -1,0 +1,8 @@
+# Pre-commit hooks for AlphaForge. Install once:  pip install pre-commit && pre-commit install
+# Then secrets are caught BEFORE they ever land in a commit (defense in depth with the
+# CI gitleaks scan, which catches anything that slips through on the server side).
+repos:
+  - repo: https://github.com/gitleaks/gitleaks
+    rev: v8.18.4
+    hooks:
+      - id: gitleaks   # runs `gitleaks protect --staged` — blocks the commit on a detected secret
