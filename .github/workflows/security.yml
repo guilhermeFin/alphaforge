@@ -1,0 +1,42 @@
+name: security
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  schedule:
+    - cron: "0 6 * * 1"   # weekly Monday 06:00 UTC — catch newly-disclosed CVEs
+
+permissions:
+  contents: read
+
+jobs:
+  dependency-audit:
+    name: dependency vulnerability audit
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install project + audit tool
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e ".[api,app,ml,data,vendors,llm,dev]" pip-audit
+      - name: pip-audit (advisory — surfaces CVEs without blocking)
+        run: pip-audit --progress-spinner off || true
+
+  secret-scan:
+    name: secret scan (gitleaks)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0   # full history so a secret committed earlier is still caught
+      - name: Install gitleaks
+        run: |
+          curl -sSL https://github.com/gitleaks/gitleaks/releases/download/v8.18.4/gitleaks_8.18.4_linux_x64.tar.gz \
+            | tar -xz gitleaks
+          sudo mv gitleaks /usr/local/bin/gitleaks
+      - name: Scan working tree + history for leaked secrets
+        run: gitleaks detect --no-banner --redact --exit-code 1

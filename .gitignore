@@ -17,6 +17,8 @@ env/
 # Secrets & config — NEVER commit API keys
 .env
 .env.*
+# the template below carries NO secrets and SHOULD be tracked:
+!.env.example
 *.key
 secrets.*
 

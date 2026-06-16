@@ -28,6 +28,7 @@ from api.service import (  # noqa: E402
     run_model_comparison,
 )
 from research.trial_ledger import TrialLedger  # noqa: E402
+from api.security import install_security, secure_cookies  # noqa: E402
 
 app = FastAPI(
     title="AlphaForge API",
@@ -35,6 +36,7 @@ app = FastAPI(
     description="The research OS for emerging quant managers — "
                 "the backtest that won't let you lie to yourself. " + DISCLAIMER,
 )
+install_security(app)  # CORS lockdown + security headers + body cap + optional rate limit
 
 
 class BacktestRequest(BaseModel):
@@ -66,7 +68,7 @@ def _get_ledger(request: Request, response: Response) -> TrialLedger:
         sid = uuid4().hex
         _LEDGERS[sid] = TrialLedger()
         response.set_cookie("af_session", sid, max_age=8 * 3600,
-                            httponly=True, samesite="lax")
+                            httponly=True, samesite="lax", secure=secure_cookies())
     return _LEDGERS[sid]
 
 
