@@ -22,10 +22,10 @@ jobs:
         with:
           python-version: ${{ matrix.python-version }}
 
-      - name: Install (engine + api + app + llm + dev)
+      - name: Install (engine + api + app + llm + ml + dev)
         run: |
           python -m pip install --upgrade pip
-          pip install -e ".[api,app,llm,dev]"
+          pip install -e ".[api,app,llm,ml,dev]"
 
       - name: Run the test suite
         run: pytest -q
