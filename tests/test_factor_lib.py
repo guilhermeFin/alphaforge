@@ -161,10 +161,81 @@ def test_factors_are_point_in_time_via_truncation():
 def test_distress_screens_run_nan_tolerant():
     world, _, fund = _build()
     close = world.close
-    for fn in (fl.altman_z, fl.ohlson_o, fl.beneish_m):
+    for fn in (fl.altman_z, fl.ohlson_o, fl.beneish_m, fl.piotroski_f_score):
         panel = fn(fund, close)
         assert panel.shape == close.shape, fn.__name__
+        assert list(panel.index) == list(close.index), fn.__name__
+        assert list(panel.columns) == list(close.columns), fn.__name__
         vals = panel.to_numpy()
         finite = vals[~np.isnan(vals)]
         # must not blow up to inf/huge even on partial inputs
         assert np.isfinite(finite).all() if finite.size else True, fn.__name__
+        # the full screens DO compute on the synthetic world (not all-NaN)
+        assert finite.size > 0, fn.__name__
+
+
+def test_altman_z_is_full_five_variable():
+    """altman_z must be the full 5-variable Z, i.e. the linear combination of its
+    five canonical terms — not a partial subset."""
+    world, _, fund = _build()
+    close = world.close
+    ta = fl._get(fund, "total_assets", close)
+    ca, cl = fl._get(fund, "current_assets", close), fl._get(fund, "current_liabilities", close)
+    re, ebit = fl._get(fund, "retained_earnings", close), fl._get(fund, "ebit", close)
+    rev, tl = fl._get(fund, "revenue", close), fl._get(fund, "total_liabilities", close)
+    x1 = fl.safe_div(ca - cl, ta)
+    x2 = fl.safe_div(re, ta)
+    x3 = fl.safe_div(ebit, ta)
+    x4 = fl.safe_div(fl.market_cap(fund, close), tl)
+    x5 = fl.safe_div(rev, ta)
+    expected = 1.2 * x1 + 1.4 * x2 + 3.3 * x3 + 0.6 * x4 + 1.0 * x5
+    got = fl.altman_z(fund, close)
+    np.testing.assert_allclose(got.to_numpy(), expected.to_numpy(),
+                               rtol=0, atol=1e-12, equal_nan=True)
+
+
+def test_piotroski_score_in_range_and_integerish():
+    """Piotroski F-score is an integer-ish panel in [0, 9] wherever it is defined."""
+    world, _, fund = _build()
+    panel = fl.piotroski_f_score(fund, world.close)
+    vals = panel.to_numpy()
+    finite = vals[~np.isnan(vals)]
+    assert finite.size > 0
+    assert np.all(finite >= 0) and np.all(finite <= 9)
+    # integer-ish: each defined value rounds to itself
+    assert np.allclose(finite, np.round(finite))
+
+
+# ----------------------------- composite alphas -----------------------------
+def test_composite_alphas_finite_after_warmup():
+    world, _, fund = _build()
+    close = world.close
+    for fn in (fl.value_with_fraud_guardrail, fl.profitable_value, fl.conservative_compounder):
+        panel = fn(fund, close)
+        assert panel.shape == close.shape, fn.__name__
+        assert list(panel.index) == list(close.index), fn.__name__
+        assert list(panel.columns) == list(close.columns), fn.__name__
+        # after the one-year warmup the late cross-section is finite (no inf/huge)
+        late = panel.iloc[-50:].to_numpy()
+        finite = late[~np.isnan(late)]
+        assert finite.size > 0, fn.__name__
+        assert np.isfinite(finite).all(), fn.__name__
+
+
+def test_composite_alphas_are_point_in_time_via_truncation():
+    """The composites inherit point-in-time safety from build_fundamentals: a factor
+    computed on a truncated history must equal the prefix of the full run (no future
+    filing can change a past value)."""
+    world, obs, _ = _build()
+    close = world.close
+    for fn in (fl.value_with_fraud_guardrail, fl.profitable_value, fl.conservative_compounder):
+        def make(c, _fn=fn):
+            fund = build_fundamentals(obs, c.index, list(c.columns))
+            return _fn(fund, c)
+        full = make(close)
+        for k in (400, 650):
+            trunc = make(close.iloc[:k])
+            np.testing.assert_allclose(
+                full.iloc[:k].to_numpy(), trunc.to_numpy(),
+                rtol=0, atol=1e-12, equal_nan=True,
+            )

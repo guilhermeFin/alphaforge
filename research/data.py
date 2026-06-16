@@ -320,6 +320,24 @@ def make_synthetic_raw_fundamentals(
     _iss_rng = np.random.default_rng(seed + 12345)
     _issuance = _iss_rng.normal(0.004, 0.012, size=(len(period_ends), n))  # ~0.4%/q, can be <0
     _share_path = shares[None, :] * np.cumprod(1.0 + _issuance, axis=0)
+
+    # ---- EXTRA raw fields for the full distress / quality screens (Piotroski,
+    # Altman, Ohlson, Beneish) ----
+    # These genuinely-new dollar amounts are drawn from a SEPARATE rng so the main
+    # per-row draw stream above stays byte-identical (existing factors/tests rely on
+    # it). The fractions are INDEPENDENT of world.quality on purpose: these screens
+    # must be honest NOISE on synthetic data, not a planted edge. They are pre-drawn
+    # as (period x symbol) matrices keyed by position so the values are deterministic
+    # regardless of the row-emission order.
+    _extra_rng = np.random.default_rng(seed + 4242)
+    P = len(period_ends)
+    # PP&E as a fraction of total assets; depreciation as a quarterly fraction of PP&E;
+    # marketable securities as a fraction of total assets; taxes payable as a fraction
+    # of current liabilities. All scale-free, quality-independent.
+    _ppe_frac = np.clip(_extra_rng.normal(0.35, 0.08, size=(P, n)), 0.05, 0.80)
+    _dep_frac = np.clip(_extra_rng.normal(0.06 / 4.0, 0.005, size=(P, n)), 0.005, 0.10)
+    _sec_frac = np.clip(_extra_rng.normal(0.05, 0.02, size=(P, n)), 0.0, 0.30)
+    _taxp_frac = np.clip(_extra_rng.normal(0.10, 0.03, size=(P, n)), 0.0, 0.40)
     for pi, pe in enumerate(period_ends):
         pos = idx.searchsorted(pe + pd.Timedelta(days=reporting_lag_days))
         if pos >= T:
@@ -389,6 +407,19 @@ def make_synthetic_raw_fundamentals(
             op_cash_flow = net_income + dep - accrual
             capex = revenue * float(np.clip(0.06 + rng.normal(0.0, 0.01), 0.0, 0.40))
 
+            # ----- EXTRA fields for the full screens (from the SEPARATE rng) -----
+            # Net PP&E is a fraction of (non-current) asset base; depreciation is a
+            # quarterly fraction of PP&E; securities and taxes_payable are small
+            # scale-free balances. income_cont_ops uses net_income as the proxy
+            # (income from continuing operations ~= net income when there are no
+            # discontinued ops, which the synthetic world does not model).
+            ppe_net = assets * float(_ppe_frac[pi, j])
+            depreciation = ppe_net * float(_dep_frac[pi, j])
+            securities = assets * float(_sec_frac[pi, j])
+            taxes_payable = current_liabilities * float(_taxp_frac[pi, j])
+            income_cont_ops = net_income  # no discontinued-ops modelling -> equal
+            short_term_debt = current_debt  # canonical alias of the current-debt line
+
             fields = {
                 "revenue": revenue,
                 "cogs": cogs,
@@ -413,6 +444,13 @@ def make_synthetic_raw_fundamentals(
                 "retained_earnings": retained_earnings,
                 "op_cash_flow": op_cash_flow,
                 "capex": capex,
+                # extra fields for the full distress / quality screens
+                "ppe_net": ppe_net,
+                "depreciation": depreciation,
+                "securities": securities,
+                "taxes_payable": taxes_payable,
+                "income_cont_ops": income_cont_ops,
+                "short_term_debt": short_term_debt,
             }
             for metric, value in fields.items():
                 rows.append((sym, pe, avail, metric, float(value)))

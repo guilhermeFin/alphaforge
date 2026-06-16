@@ -27,8 +27,9 @@ from __future__ import annotations
 import numpy as np
 import pandas as pd
 
-from .factors import cross_sectional_zscore, blend, momentum
+from .factors import cross_sectional_zscore, blend, momentum, trailing_volatility
 from .fundamentals import Fundamentals
+from . import factors
 
 TRADING_DAYS = 252
 
@@ -94,6 +95,18 @@ def _get(fund: Fundamentals, metric: str, close: pd.DataFrame) -> pd.DataFrame:
 def market_cap(fund: Fundamentals, close: pd.DataFrame) -> pd.DataFrame:
     """Price * diluted shares — the common denominator of the value ratios."""
     return close * _get(fund, "shares_diluted", close)
+
+
+def enterprise_value(fund: Fundamentals, close: pd.DataFrame) -> pd.DataFrame:
+    """Enterprise value = market_cap + total_debt - cash.
+
+    total_debt = current_debt + long_term_debt. The takeover-cost view of a firm; the
+    natural denominator for EBIT/EV (a capital-structure-neutral cheapness ratio).
+    NaN where any component is missing (inherits ``safe_div``/NaN tolerance from the
+    underlying fields)."""
+    cd, ltd = _get(fund, "current_debt", close), _get(fund, "long_term_debt", close)
+    cash = _get(fund, "cash", close)
+    return market_cap(fund, close) + (cd + ltd) - cash
 
 
 # ----------------------------- profitability / quality -----------------------------
@@ -233,6 +246,83 @@ def value_score(fund: Fundamentals, close: pd.DataFrame) -> pd.DataFrame:
     )
 
 
+# ----------------------------- composite alphas -----------------------------
+# These are the "alpha" panels the coordinator long/short-z-scores. They combine the
+# documented building blocks above. NaN-handling choice (documented): each component
+# is first cross-sectionally z-scored; we then combine the z-scores treating a MISSING
+# z-component as a 0 contribution (i.e. neutral, the cross-sectional mean) rather than
+# letting one absent screen wipe the whole name. This keeps a name scored on the
+# components it DOES have — partial coverage stays honest, not silently dropped. A name
+# with NO computable component at a date is left NaN (nothing to say).
+def _zsum(*panels: pd.DataFrame) -> pd.DataFrame:
+    """Sum already-z-scored panels, treating NaN as 0 (neutral) per cell, but keeping a
+    cell NaN only where EVERY input is NaN (no information at all)."""
+    arrs = [p.to_numpy(dtype=float) for p in panels]
+    stack = np.stack(arrs, axis=0)
+    total = np.nansum(stack, axis=0)
+    all_nan = np.all(np.isnan(stack), axis=0)
+    total = np.where(all_nan, np.nan, total)
+    return pd.DataFrame(total, index=panels[0].index, columns=panels[0].columns)
+
+
+def _zprod(a: pd.DataFrame, b: pd.DataFrame) -> pd.DataFrame:
+    """Product of two z-scored panels, NaN only where EITHER input is NaN (a product
+    needs both legs; there is no neutral substitute that preserves the AND semantics)."""
+    out = a * b
+    return out
+
+
+def value_with_fraud_guardrail(fund: Fundamentals, close: pd.DataFrame) -> pd.DataFrame:
+    """Cheap names, PENALISED for manipulation/distress.
+
+      score = z(book_to_price) + z(ebit/enterprise_value) - z(beneish_m) - z(ohlson_o)
+
+    The two value legs reward cheapness (high B/P, high EBIT/EV); the two screen legs
+    SUBTRACT manipulation (Beneish M) and bankruptcy risk (Ohlson O), so a cheap name
+    that also looks manipulated or distressed is pulled back down. Higher = better
+    (cheap AND clean). NaN-tolerant via ``_zsum`` (a missing screen contributes 0, so a
+    name still scores on the value legs it has)."""
+    z = cross_sectional_zscore
+    ebit_ev = safe_div(_get(fund, "ebit", close), enterprise_value(fund, close))
+    return _zsum(
+        z(book_to_price(fund, close)),
+        z(ebit_ev),
+        -z(beneish_m(fund, close)),
+        -z(ohlson_o(fund, close)),
+    )
+
+
+def profitable_value(fund: Fundamentals, close: pd.DataFrame) -> pd.DataFrame:
+    """Only names that are BOTH very cheap AND very profitable score high.
+
+      score = z(book_to_price) * z(gross_profitability)
+
+    The product is an AND gate: it is large-positive only when both legs are high (or
+    both low — a cheap, low-quality value trap scores negative, which is intended), and
+    near zero when either is average. Higher = better. NaN where either leg is missing
+    (the AND needs both)."""
+    z = cross_sectional_zscore
+    return _zprod(z(book_to_price(fund, close)), z(gross_profitability(fund, close)))
+
+
+def conservative_compounder(fund: Fundamentals, close: pd.DataFrame) -> pd.DataFrame:
+    """Quality + investment discipline + low risk.
+
+      score = z(gross_profitability) - z(asset_growth) - z(realized_vol)
+
+    Rewards high gross profitability, penalises aggressive asset growth (the
+    asset-growth anomaly) and high realised volatility (the low-vol anomaly).
+    ``realized_vol`` is ``factors.trailing_volatility(close)`` (annualised trailing
+    63-day vol, past-only). Higher = better. NaN-tolerant via ``_zsum``."""
+    z = cross_sectional_zscore
+    realized_vol = factors.trailing_volatility(close)
+    return _zsum(
+        z(gross_profitability(fund, close)),
+        -z(asset_growth(fund, close)),
+        -z(realized_vol),
+    )
+
+
 # ----------------------------- distress / quality screens -----------------------------
 def altman_z(fund: Fundamentals, close: pd.DataFrame) -> pd.DataFrame:
     """Altman Z-score (manufacturing, 1968), built from available canonical fields.
@@ -258,71 +348,196 @@ def altman_z(fund: Fundamentals, close: pd.DataFrame) -> pd.DataFrame:
     return 1.2 * x1 + 1.4 * x2 + 3.3 * x3 + 0.6 * x4 + 1.0 * x5
 
 
-def ohlson_o(fund: Fundamentals, close: pd.DataFrame) -> pd.DataFrame:
-    """Ohlson O-score (1980) bankruptcy probability proxy — field-hungry.
+def piotroski_f_score(fund: Fundamentals, close: pd.DataFrame) -> pd.DataFrame:
+    """Piotroski F-score (2000): an integer 0..9 quality screen on point-in-time
+    fundamentals. Each of nine binary tests scores 1 if passed, else 0; the score is
+    their sum (higher = financially stronger).
 
-    O = -1.32 - 0.407*log(TA) + 6.03*TL/TA - 1.43*WC/TA + 0.0757*CL/CA
-        - 1.72*OENEG - 2.37*NI/TA - 1.83*FU/TL + 0.285*INTWO - 0.521*CHIN
-    where WC = working capital, OENEG = 1 if total_liabilities > total_assets,
-    FU ~ op_cash_flow (funds from operations proxy), INTWO = 1 if net_income < 0 for
-    two consecutive periods (approximated as current period < 0; conservative),
-    CHIN = scaled change in NI. Higher O = higher distress probability. Returns NaN
-    where inputs are missing — on sparse synthetic data this may be largely NaN, which
-    is the honest behaviour (see deviations)."""
+    The nine signals (current vs prior year on the daily PIT panel, ~252-bar shift):
+      1. ROA > 0                          (net_income / beginning total_assets)
+      2. CFO > 0                          (op_cash_flow / beginning total_assets)
+      3. ΔROA > 0                         (ROA improved year-over-year)
+      4. accrual: CFO/TA > ROA            (cash earnings exceed accrual earnings)
+      5. ΔLeverage < 0                    (long_term_debt / avg total_assets fell)
+      6. ΔCurrentRatio > 0                (current_assets / current_liabilities rose)
+      7. no share issuance                (shares_diluted did not increase YoY)
+      8. ΔGrossMargin > 0                 (gross_profit / revenue rose)
+      9. ΔAssetTurnover > 0               (revenue / beginning total_assets rose)
+
+    Following Piotroski, profitability and turnover are scaled by BEGINNING-of-period
+    assets (i.e. the lagged total_assets), and leverage by AVERAGE assets. The score
+    is NaN-tolerant: each test contributes NaN where its inputs are missing, and the
+    name's score is NaN only when FEWER than ~7 of the nine tests are computable (a
+    screen, not a guaranteed quantity). Returns a (dates x symbols) integer-ish panel
+    with values in [0, 9] (or NaN). NaN through the one-year warmup (needs a prior
+    year for the four Δ tests and the beginning-assets scaling)."""
+    L = TRADING_DAYS
+    ta = _get(fund, "total_assets", close)
+    ni = _get(fund, "net_income", close)
+    ocf = _get(fund, "op_cash_flow", close)
+    ltd = _get(fund, "long_term_debt", close)
+    ca, cl = _get(fund, "current_assets", close), _get(fund, "current_liabilities", close)
+    sh = _get(fund, "shares_diluted", close)
+    gp, rev = _get(fund, "gross_profit", close), _get(fund, "revenue", close)
+
+    ta_beg = ta.shift(L)        # beginning-of-period assets (Piotroski scales by these)
+    ta_beg2 = ta.shift(2 * L)   # assets two years ago (beginning for the prior year)
+
+    # 1. ROA > 0 ; 2. CFO > 0 (both scaled by beginning assets)
+    roa_c = safe_div(ni, ta_beg)
+    roa_p = safe_div(ni.shift(L), ta_beg2)
+    cfo_c = safe_div(ocf, ta_beg)
+    f_roa = (roa_c > 0).astype(float).where(roa_c.notna())
+    f_cfo = (cfo_c > 0).astype(float).where(cfo_c.notna())
+    # 3. ΔROA > 0
+    f_droa = (roa_c - roa_p > 0).astype(float).where(roa_c.notna() & roa_p.notna())
+    # 4. accrual: CFO/TA > ROA  (compared on the same beginning-assets scaling)
+    f_accr = (cfo_c > roa_c).astype(float).where(cfo_c.notna() & roa_c.notna())
+    # 5. ΔLeverage < 0 (LTD / average assets)
+    avg_ta = avg2(ta, ta_beg)
+    avg_ta_p = avg2(ta.shift(L), ta_beg2)
+    lev_c = safe_div(ltd, avg_ta)
+    lev_p = safe_div(ltd.shift(L), avg_ta_p)
+    f_lev = (lev_c - lev_p < 0).astype(float).where(lev_c.notna() & lev_p.notna())
+    # 6. ΔCurrentRatio > 0
+    cr_c = safe_div(ca, cl)
+    cr_p = safe_div(ca.shift(L), cl.shift(L))
+    f_cr = (cr_c - cr_p > 0).astype(float).where(cr_c.notna() & cr_p.notna())
+    # 7. no share issuance (shares did not increase)
+    sh_p = sh.shift(L)
+    f_iss = (sh - sh_p <= 0).astype(float).where(sh.notna() & sh_p.notna())
+    # 8. ΔGrossMargin > 0
+    gm_c = safe_div(gp, rev)
+    gm_p = safe_div(gp.shift(L), rev.shift(L))
+    f_gm = (gm_c - gm_p > 0).astype(float).where(gm_c.notna() & gm_p.notna())
+    # 9. ΔAssetTurnover > 0 (revenue / beginning assets)
+    at_c = safe_div(rev, ta_beg)
+    at_p = safe_div(rev.shift(L), ta_beg2)
+    f_at = (at_c - at_p > 0).astype(float).where(at_c.notna() & at_p.notna())
+
+    tests = [f_roa, f_cfo, f_droa, f_accr, f_lev, f_cr, f_iss, f_gm, f_at]
+    # nan-aware sum: a missing test contributes 0 to the score but is counted as
+    # "not available"; require >= 7 of 9 available or the whole score is NaN (honest:
+    # too sparse to call). Stack along a new axis to count availability per cell.
+    stack = np.stack([t.to_numpy(dtype=float) for t in tests], axis=0)  # (9, T, N)
+    avail = np.sum(~np.isnan(stack), axis=0)                            # (T, N)
+    score = np.nansum(stack, axis=0)                                   # (T, N)
+    score = np.where(avail >= 7, score, np.nan)
+    return pd.DataFrame(score, index=close.index, columns=close.columns)
+
+
+def ohlson_o(fund: Fundamentals, close: pd.DataFrame) -> pd.DataFrame:
+    """Ohlson O-score (1980): the full nine-term logit bankruptcy proxy.
+
+    O = -1.32 - 0.407*log(TA/GNP) + 6.03*(TL/TA) - 1.43*(WC/TA) + 0.0757*(CL/CA)
+        - 1.72*OENEG - 2.37*(NI/TA) - 1.83*(FFO/TL)
+        + 0.285*INTWO - 0.521*CHIN
+    where
+      WC    = working_capital = current_assets - current_liabilities,
+      OENEG = 1 if total_liabilities > total_assets (negative book equity), else 0,
+      FFO   = funds from operations; here op_cash_flow is the documented proxy (no
+              explicit FFO line in the canonical fields),
+      INTWO = 1 if net_income < 0 in BOTH the current and prior year, else 0,
+      CHIN  = (NI - NI_prev) / (|NI| + |NI_prev|), a scale-free change in net income,
+      GNP   = a GNP / price-deflator index; with no index available we use the
+              documented proxy GNP = 1.0, so log(TA/GNP) = log(TA).
+    Higher O = higher implied distress probability. Returns NaN where inputs are
+    missing (the screen tolerates partial data rather than fabricating a score). The
+    two-year terms (INTWO, CHIN) are NaN through the one-year warmup."""
+    GNP = 1.0  # no GNP/price-deflator index available -> documented unit proxy
+    L = TRADING_DAYS
     ta = _get(fund, "total_assets", close)
     tl = _get(fund, "total_liabilities", close)
     ca, cl = _get(fund, "current_assets", close), _get(fund, "current_liabilities", close)
-    ni, ocf = _get(fund, "net_income", close), _get(fund, "op_cash_flow", close)
+    ni = _get(fund, "net_income", close)
+    ffo = _get(fund, "op_cash_flow", close)  # funds-from-operations proxy (documented)
     wc = ca - cl
     oeneg = (tl > ta).astype(float).where(ta.notna() & tl.notna())
-    intwo = (ni < 0).astype(float).where(ni.notna())
-    ni_prev = ni.shift(TRADING_DAYS)
+    ni_prev = ni.shift(L)
+    intwo = ((ni < 0) & (ni_prev < 0)).astype(float).where(ni.notna() & ni_prev.notna())
     chin = safe_div(ni - ni_prev, ni.abs() + ni_prev.abs())
     return (
         -1.32
-        - 0.407 * np.log(ta.where(ta > 0))
+        - 0.407 * np.log((ta / GNP).where(ta > 0))
         + 6.03 * safe_div(tl, ta)
         - 1.43 * safe_div(wc, ta)
         + 0.0757 * safe_div(cl, ca)
         - 1.72 * oeneg
         - 2.37 * safe_div(ni, ta)
-        - 1.83 * safe_div(ocf, tl)
+        - 1.83 * safe_div(ffo, tl)
         + 0.285 * intwo
         - 0.521 * chin
     )
 
 
 def beneish_m(fund: Fundamentals, close: pd.DataFrame) -> pd.DataFrame:
-    """Beneish M-score (earnings-manipulation detector) — uses year-over-year ratios.
+    """Beneish M-score (1999): the full eight-variable earnings-manipulation detector.
 
-    Implements the subset of the 8 indices computable from the canonical fields, on
-    the daily PIT panel with a ~252-bar (one-year) shift:
-      DSRI = (receivables/revenue) vs prior year
+    M = -4.84 + 0.92*DSRI + 0.528*GMI + 0.404*AQI + 0.892*SGI + 0.115*DEPI
+        - 0.172*SGAI + 4.679*TATA - 0.327*LVGI
+    Year-over-year ratios on the daily PIT panel (~252-bar shift):
+      DSRI = (receivables/sales) / prior(receivables/sales)
       GMI  = prior gross margin / current gross margin
-      AQI  = (1 - (current_assets)/total_assets) vs prior year
-      SGI  = revenue / prior revenue
-      TATA = (net_income - op_cash_flow) / total_assets  (total accruals to assets)
-    M ~= -4.84 + 0.92*DSRI + 0.528*GMI + 0.404*AQI + 0.892*SGI + 4.679*TATA
-        (DEPI and LVGI dropped — depreciation schedule / leverage-change inputs not
-         separately available; documented in deviations). Higher M = more likely
-         manipulation. NaN through the one-year warmup and where inputs are missing."""
+      AQI  = (1 - (current_assets + ppe_net + securities)/total_assets) vs prior
+      SGI  = sales / prior sales
+      DEPI = prior depreciation-rate / current depreciation-rate,
+             depreciation-rate = depreciation / (depreciation + ppe_net)
+      SGAI = (sga/sales) / prior(sga/sales)
+      TATA = (income_cont_ops - op_cash_flow) / total_assets   (total accruals)
+      LVGI = ((current_liabilities + long_term_debt)/total_assets) vs prior
+    Higher M (toward/above ~-1.78 / -2.22) = more likely manipulation. Each component
+    is NaN-tolerant via ``safe_div``; the score is NaN through the one-year warmup and
+    where a required field is missing."""
+    L = TRADING_DAYS
     rev = _get(fund, "revenue", close)
     rect = _get(fund, "receivables", close)
     ta = _get(fund, "total_assets", close)
     ca = _get(fund, "current_assets", close)
+    ppe = _get(fund, "ppe_net", close)
+    sec = _get(fund, "securities", close)
     gp = _get(fund, "gross_profit", close)
-    ni, ocf = _get(fund, "net_income", close), _get(fund, "op_cash_flow", close)
-    L = TRADING_DAYS
+    dep = _get(fund, "depreciation", close)
+    sga = _get(fund, "sga", close)
+    ico = _get(fund, "income_cont_ops", close)
+    ocf = _get(fund, "op_cash_flow", close)
+    cl = _get(fund, "current_liabilities", close)
+    ltd = _get(fund, "long_term_debt", close)
 
+    # DSRI: days-sales-in-receivables index
     dsri = safe_div(safe_div(rect, rev), safe_div(rect.shift(L), rev.shift(L)))
+    # GMI: gross-margin index (prior / current)
     gm_curr, gm_prev = safe_div(gp, rev), safe_div(gp.shift(L), rev.shift(L))
     gmi = safe_div(gm_prev, gm_curr)
-    aqi_curr = 1.0 - safe_div(ca, ta)
-    aqi_prev = 1.0 - safe_div(ca.shift(L), ta.shift(L))
+    # AQI: asset-quality index — non-(CA+PPE+securities) share of assets vs prior
+    aqi_curr = 1.0 - safe_div(ca + ppe + sec, ta)
+    aqi_prev = 1.0 - safe_div(ca.shift(L) + ppe.shift(L) + sec.shift(L), ta.shift(L))
     aqi = safe_div(aqi_curr, aqi_prev)
+    # SGI: sales growth index
     sgi = safe_div(rev, rev.shift(L))
-    tata = safe_div(ni - ocf, ta)
-    return -4.84 + 0.92 * dsri + 0.528 * gmi + 0.404 * aqi + 0.892 * sgi + 4.679 * tata
+    # DEPI: depreciation index (prior dep-rate / current dep-rate)
+    dep_rate_c = safe_div(dep, dep + ppe)
+    dep_rate_p = safe_div(dep.shift(L), dep.shift(L) + ppe.shift(L))
+    depi = safe_div(dep_rate_p, dep_rate_c)
+    # SGAI: SG&A index (current SGA/sales vs prior)
+    sgai = safe_div(safe_div(sga, rev), safe_div(sga.shift(L), rev.shift(L)))
+    # TATA: total accruals to total assets (continuing-ops income less CFO)
+    tata = safe_div(ico - ocf, ta)
+    # LVGI: leverage index ((CL+LTD)/TA current vs prior)
+    lev_c = safe_div(cl + ltd, ta)
+    lev_p = safe_div(cl.shift(L) + ltd.shift(L), ta.shift(L))
+    lvgi = safe_div(lev_c, lev_p)
+
+    return (
+        -4.84
+        + 0.92 * dsri
+        + 0.528 * gmi
+        + 0.404 * aqi
+        + 0.892 * sgi
+        + 0.115 * depi
+        - 0.172 * sgai
+        + 4.679 * tata
+        - 0.327 * lvgi
+    )
 
 
 # ----------------------------- price / volume factors -----------------------------

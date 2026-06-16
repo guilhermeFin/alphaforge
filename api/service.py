@@ -71,6 +71,13 @@ FACTOR_CATALOG = [
      "blurb": "Low asset growth — aggressive expanders tend to underperform."},
     {"name": "low_issuance", "label": "Low share issuance", "category": "Investment", "kind": "fundamental",
      "blurb": "Less new stock issued — persistent diluters underperform."},
+    # Composite alpha (multi-signal recipes that combine orthogonal mechanisms)
+    {"name": "value_with_fraud_guardrail", "label": "Value (fraud-guarded)", "category": "Composite alpha", "kind": "fundamental",
+     "blurb": "Cheap on B/P and EBIT/EV, penalized by Beneish-M manipulation and Ohlson-O distress."},
+    {"name": "profitable_value", "label": "Profitable value", "category": "Composite alpha", "kind": "fundamental",
+     "blurb": "Scores high only when a name is BOTH very cheap and very profitable (a z×z AND-gate)."},
+    {"name": "conservative_compounder", "label": "Conservative compounder", "category": "Composite alpha", "kind": "fundamental",
+     "blurb": "High gross profitability, low asset growth, low realized volatility — quality with discipline."},
     # Multi-factor
     {"name": "value_quality", "label": "Value + Quality", "category": "Multi-factor", "kind": "fundamental",
      "blurb": "Cheap AND healthy — value and quality combined."},
@@ -94,6 +101,10 @@ FACTORLIB_SPECS = {
     "low_leverage": ("leverage", -1),
     "conservative_investment": ("asset_growth", -1),
     "low_issuance": ("net_equity_issuance", -1),
+    # composites already return a combined score panel; +1 (higher is better by construction)
+    "value_with_fraud_guardrail": ("value_with_fraud_guardrail", +1),
+    "profitable_value": ("profitable_value", +1),
+    "conservative_compounder": ("conservative_compounder", +1),
 }
 FUNDAMENTAL_FACTORS = LEGACY_FUNDAMENTAL + tuple(FACTORLIB_SPECS.keys())
 PROVIDERS = ("synthetic", "yfinance")
