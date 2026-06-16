@@ -156,6 +156,22 @@ def test_response_includes_pbo_and_cvar():
     assert "NaN" not in client.post("/backtest", json=_small_req(periods=800)).text
 
 
+def test_response_includes_attribution():
+    # fundamental factor on synthetic -> full FF5 attribution (RMW present)
+    body = client.post("/backtest", json=_small_req(factor="gross_profitability",
+                                                    periods=1512, n_trials=10)).json()
+    attr = body["attribution"]
+    assert "error" not in attr, attr
+    assert attr["model"] == "ff5"
+    assert "RMW" in attr.get("betas", {})
+    assert 0.0 <= (attr.get("r_squared") or 0.0) <= 1.0
+    # price factor -> price-only fallback (carhart4: MKT + UMD, fundamentals absent)
+    a2 = client.post("/backtest", json=_small_req(factor="momentum", periods=1512, n_trials=10)).json()["attribution"]
+    assert "error" not in a2
+    assert a2["model"] == "carhart4"
+    assert a2.get("fundamentals_used") is False
+
+
 def test_factorlib_factors_are_selectable_and_run():
     from api.service import FACTOR_CATALOG, FACTORS
     assert len(FACTORS) == len(FACTOR_CATALOG)  # catalog and validator agree

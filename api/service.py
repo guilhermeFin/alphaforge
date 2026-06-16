@@ -19,6 +19,7 @@ from research import data, factors, factor_lib, fundamentals, signal_quality, st
 from research.backtest import backtest
 from research.walkforward import split_backtest, walk_forward
 from research.trial_ledger import TrialLedger
+from research.attribution import compact_attribution
 
 DISCLAIMER = (
     "AlphaForge is research software, not investment advice. Backtests are "
@@ -286,6 +287,7 @@ def run_backtest_workflow(req: dict, ledger: "TrialLedger | None" = None) -> dic
     used to under-deflate). No ledger => stateless, declared n_trials used as-is.
     """
     p = _validate(req)
+    fund_for_attr = None  # raw-field bundle for factor attribution (synthetic fundamentals only)
 
     if p["factor"] in FUNDAMENTAL_FACTORS:
         # Fundamental factors need point-in-time fundamentals. Free vendors serve
@@ -312,6 +314,10 @@ def run_backtest_workflow(req: dict, ledger: "TrialLedger | None" = None) -> dic
                 score = fundamentals.quality_score(fund, close)
             else:
                 score = fundamentals.value_quality_score(fund, close)
+            # attribution needs RAW-field factor portfolios; build them from the same world
+            fund_for_attr = fundamentals.build_fundamentals(
+                data.make_synthetic_raw_fundamentals(world, seed=p["seed"]),
+                close.index, list(close.columns))
         else:
             # Single-factor library factors run on the RAW canonical fields; the
             # sign flips "lower is better" signals so the rank points the right way.
@@ -320,6 +326,7 @@ def run_backtest_workflow(req: dict, ledger: "TrialLedger | None" = None) -> dic
             fn_name, sign = FACTORLIB_SPECS[p["factor"]]
             raw = getattr(factor_lib, fn_name)(fund, close)
             score = factors.cross_sectional_zscore(raw if sign > 0 else -raw)
+            fund_for_attr = fund  # already the raw-field bundle
     else:
         if p["provider"] == "synthetic":
             panel = data.get_panel(
@@ -378,6 +385,15 @@ def run_backtest_workflow(req: dict, ledger: "TrialLedger | None" = None) -> dic
     pbo = _compute_pbo(close, p)  # CSCV Probability of Backtest Overfitting
     tails = stats_guards.fat_tail_report(res.returns)
 
+    # Factor-model attribution: how much of the strategy's return is just FF/Carhart
+    # factor beta vs. genuine idiosyncratic alpha. Full FF5 when synthetic fundamentals
+    # are available; price-only (MKT + UMD) otherwise.
+    attr_model = "ff5" if fund_for_attr is not None else "carhart4"
+    try:
+        attribution = compact_attribution(res.returns, close, fund=fund_for_attr, model=attr_model)
+    except Exception as e:  # noqa: BLE001 - attribution is a read-out, never fail the run
+        attribution = {"error": f"{type(e).__name__}: {e}"}
+
     # Headline verdict is OUT-OF-SAMPLE first. A strategy that only passes the
     # full-sample Deflated Sharpe but fails walk-forward / decays out-of-sample is
     # NOT credible — anything else would let the tool flatter a data-mined fit.
@@ -420,6 +436,7 @@ def run_backtest_workflow(req: dict, ledger: "TrialLedger | None" = None) -> dic
         "walk_forward": wf,
         "pbo": pbo,
         "trial_audit": trial_audit,
+        "attribution": attribution,
         "fat_tails": tails,
         "equity_curve": _downsample_curve(res.equity),
         "drawdown_curve": _downsample_curve(dd),

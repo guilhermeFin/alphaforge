@@ -14,9 +14,9 @@ the brand more than a missing feature.
 
 from . import (data, factors, metrics, backtest, walkforward, stats_guards,
                fundamentals, providers, signal_quality, factor_lib, overfitting,
-               trial_ledger)
+               trial_ledger, attribution)
 
 __all__ = ["data", "factors", "metrics", "backtest", "walkforward", "stats_guards",
            "fundamentals", "providers", "signal_quality", "factor_lib",
-           "overfitting", "trial_ledger"]
+           "overfitting", "trial_ledger", "attribution"]
 __version__ = "0.0.1"

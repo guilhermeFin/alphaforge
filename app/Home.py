@@ -253,8 +253,9 @@ c5.metric("Hit rate", fmt(card['hit_rate'], '.1%'))
 # ----------------------------- detail tabs -----------------------------
 # The dense detail is organized into tabs so the page reads top-down: verdict and
 # headline numbers above, then drill into Performance / Honesty / Signal / Overfitting.
-t_perf, t_honest, t_signal, t_pbo, t_details = st.tabs(
-    ["📈 Performance", "🛡️ Honesty checks", "🎯 Signal quality", "🎲 Overfitting", "📋 Details"])
+t_perf, t_honest, t_signal, t_pbo, t_attr, t_details = st.tabs(
+    ["📈 Performance", "🛡️ Honesty checks", "🎯 Signal quality", "🎲 Overfitting",
+     "🧬 Attribution", "📋 Details"])
 
 with t_perf:
     eq = pd.DataFrame(res["equity_curve"])
@@ -359,6 +360,39 @@ with t_pbo:
         st.caption(f"PBO: n/a — {pbo['error']}")
     else:
         st.caption("PBO not computed for this run.")
+
+with t_attr:
+    attr = res.get("attribution") or {}
+    if attr.get("error"):
+        st.caption(f"Attribution: n/a — {attr['error']}")
+    elif attr.get("insufficient"):
+        st.caption(f"Attribution: n/a — {attr.get('note') or 'insufficient data'}")
+    else:
+        st.markdown(f"**Factor attribution ({attr.get('model', '?').upper()})** — how much of the "
+                    "return is just factor beta vs. genuine alpha")
+        m1, m2, m3, m4 = st.columns(4)
+        m1.metric("Alpha (annualized)", fmt(attr.get("alpha_annualized"), "+.2%"))
+        m2.metric("Alpha t-stat", fmt(attr.get("alpha_tstat"), ".2f"))
+        m3.metric("R²", fmt(attr.get("r_squared"), ".0%"))
+        m4.metric("Systematic var", fmt(attr.get("systematic_var_share"), ".0%"))
+        _at = attr.get("alpha_tstat")
+        st.write(("🟢 Significant alpha beyond the factors (|t| > 2)"
+                  if (_at is not None and abs(_at) > 2) else
+                  "🟡 No significant alpha — the return is mostly factor beta you could buy cheaply"))
+        if attr.get("verdict"):
+            st.caption(attr["verdict"])
+        betas, bts = attr.get("betas") or {}, attr.get("beta_tstats") or {}
+        if betas:
+            st.dataframe(pd.DataFrame({
+                "factor": list(betas.keys()),
+                "beta": [None if betas[k] is None else round(betas[k], 3) for k in betas],
+                "t-stat": [None if bts.get(k) is None else round(bts[k], 1) for k in betas],
+            }), use_container_width=True, hide_index=True)
+        if attr.get("factors_missing"):
+            st.caption(f"Factors not available for this run: {', '.join(attr['factors_missing'])}.")
+        st.caption("Regression of the strategy's daily returns on Fama-French / Carhart factor "
+                   "portfolios. High R² with an insignificant alpha means the 'edge' is mostly "
+                   "factor beta you could buy cheaply.")
 
 with t_details:
     st.caption("Every raw scorecard value, for the detail-oriented.")
