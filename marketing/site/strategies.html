@@ -26,7 +26,7 @@
   <div class="wrap">
     <span class="eyebrow">Strategy library</span>
     <h1>The strategy library</h1>
-    <p class="sub">A shelf of the classic factors every quant has heard of — each one shipped <em>with</em> its honesty verdict. The point isn't to hand you a winner. It's to show you what survives the trial and what doesn't.</p>
+    <p class="sub">Twenty-one factors across six families — technical, value, quality, investment, composite, and multi-factor — each shipped <em>with</em> its honesty verdict. The point isn't to hand you a winner. It's to show you what survives the trial and what doesn't.</p>
   </div>
 </header>
 
@@ -134,9 +134,34 @@
         </div>
       </div>
 
+      <div class="strat">
+        <div class="row1">
+          <h3>Gross profitability</h3>
+          <span class="verdict v-ok">Credible</span>
+        </div>
+        <p>Novy-Marx's robust quality signal — gross profit over assets. The cleanest of the quality family, and on the synthetic demo (where quality is planted) it clears the same out-of-sample bar that momentum fails.</p>
+        <div class="stats">
+          <div><div class="l">Ann. Sharpe</div><span class="num">~1.83</span></div>
+          <div><div class="l">Deflated SR (OOS)</div><span class="num">~0.99</span></div>
+          <div><div class="l">Family</div><span class="num">Quality</span></div>
+        </div>
+      </div>
+
+      <div class="strat">
+        <div class="row1">
+          <h3>Composite alphas</h3>
+          <span class="verdict" style="color:var(--t3);background:rgba(255,255,255,.06)">Run it yourself</span>
+        </div>
+        <p>Multi-signal recipes — value-with-fraud-guardrail, profitable value, conservative compounder — that stack orthogonal mechanisms. Combining signals earns no free pass: each composite faces the identical trial, and on demo data the noise legs dilute the one planted signal, so they stay yours to prove on real history.</p>
+        <div class="stats">
+          <div><div class="l">In the library</div><span class="num">3 composites</span></div>
+          <div><div class="l">Verdict</div><span class="num">yours to earn</span></div>
+        </div>
+      </div>
+
     </div>
 
-    <p class="micro" style="text-align:center">All figures above are illustrative results on synthetic demo data — quality is planted, momentum is not. They demonstrate the tool, not a real-world edge.</p>
+    <p class="micro" style="text-align:center">Illustrative results on synthetic demo data — quality factors are planted, value/momentum are not. The catalog spans 21 factors across six families; these demonstrate the tool, not a real-world edge.</p>
   </div>
 </section>
 
@@ -165,6 +190,7 @@
         <p>Before any equity curve, we check the raw correlation between the signal and the returns it's supposed to predict. Weak, unstable information coefficients are the early tell that a strategy is dressing up randomness as foresight.</p>
       </div>
     </div>
+    <p class="micro" style="text-align:center;margin-top:26px">The same run also reports historical CVaR tail risk, rolling-window IC sign-stability across eras, and a Fama-French / Carhart <a class="accent" href="lab.html">factor-attribution</a> read — so an "edge" that's really just cheap factor beta is exposed, not sold to you as alpha.</p>
   </div>
 </section>
 
