@@ -1,0 +1,195 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Strategies — AlphaForge</title>
+  <meta name="description" content="The AlphaForge strategy library: classic factors shipped with an honesty verdict each. See which edges pass the same statistical trial — and which get rejected.">
+  <link rel="stylesheet" href="assets/site.css">
+</head>
+<body>
+
+<nav id="nav"><div class="wrap navrow">
+  <a class="logo" href="index.html"><span class="mark">A</span>AlphaForge</a>
+  <div class="navlinks">
+    <a href="lab.html">Platform</a>
+    <a href="datasets.html">Datasets</a>
+    <a href="strategies.html" class="active">Strategies</a>
+    <a href="learn.html">Learn</a>
+    <a href="docs.html">Docs</a>
+    <a href="pricing.html">Pricing</a>
+  </div>
+  <div class="navright"><a class="btn btn-ghost-sm" href="#">Sign in</a><a class="btn btn-primary" href="pricing.html">Start free</a></div>
+</div></nav>
+
+<header class="phero">
+  <div class="wrap">
+    <span class="eyebrow">Strategy library</span>
+    <h1>The strategy library</h1>
+    <p class="sub">A shelf of the classic factors every quant has heard of — each one shipped <em>with</em> its honesty verdict. The point isn't to hand you a winner. It's to show you what survives the trial and what doesn't.</p>
+  </div>
+</header>
+
+<section style="padding-top:54px">
+  <div class="wrap-narrow">
+    <div class="callout">
+      <strong>Read this before you read a single number.</strong> Every figure on this page is illustrative output from a <strong>synthetic demo dataset</strong>, not a real track record. The demo data is built so that a quality-style edge is <em>deliberately planted</em> and a momentum-style edge <em>deliberately is not</em>. So when quality passes and momentum fails below, that proves the <em>tool</em> can tell them apart — it says nothing about whether quality beats momentum in live markets. Run these on your own data to find out what's true for you.
+    </div>
+  </div>
+</section>
+
+<section style="padding-top:0">
+  <div class="wrap">
+    <div class="section-head center">
+      <span class="eyebrow">Factors on the shelf</span>
+      <h2>One verdict per strategy</h2>
+      <p>Same engine, same trial, same scoreboard for all of them. The pill is the verdict the honest backtester returned on the demo data.</p>
+    </div>
+
+    <div class="strat-grid">
+
+      <div class="strat">
+        <div class="row1">
+          <h3>Quality</h3>
+          <span class="verdict v-ok">Credible</span>
+        </div>
+        <p>Tilt toward financially healthy firms — strong balance sheets, durable margins, low reliance on the next round of financing. The kind of names that hold up when the cycle turns.</p>
+        <div class="stats">
+          <div><div class="l">Ann. Sharpe</div><span class="num">~1.85</span></div>
+          <div><div class="l">Deflated SR (OOS)</div><span class="num">~0.99</span></div>
+          <div><div class="l">Max drawdown</div><span class="num">~−6%</span></div>
+        </div>
+      </div>
+
+      <div class="strat">
+        <div class="row1">
+          <h3>Momentum</h3>
+          <span class="verdict v-no">Not credible</span>
+        </div>
+        <p>Buy what's been going up, on the bet that recent winners keep winning. The textbook crowd-favorite — and the teaching case for why a good-looking equity curve isn't proof of anything.</p>
+        <div class="stats">
+          <div><div class="l">Ann. Sharpe</div><span class="num">~−0.14</span></div>
+          <div><div class="l">Deflated SR (OOS)</div><span class="num">~0.07</span></div>
+          <div><div class="l">Note</div><span class="num">teaching case</span></div>
+        </div>
+      </div>
+
+      <div class="strat">
+        <div class="row1">
+          <h3>Value</h3>
+          <span class="verdict" style="color:var(--t3);background:rgba(255,255,255,.06)">Run it yourself</span>
+        </div>
+        <p>Lean into cheap names — low price relative to fundamentals — and wait for the discount to close. On the synthetic demo this factor is intentionally just noise, so there's no verdict to hand you; the answer lives in your data.</p>
+        <div class="stats">
+          <div><div class="l">Synthetic signal</div><span class="num">noise by design</span></div>
+          <div><div class="l">Verdict</div><span class="num">yours to earn</span></div>
+        </div>
+      </div>
+
+      <div class="strat">
+        <div class="row1">
+          <h3>Low-volatility</h3>
+          <span class="verdict" style="color:var(--t3);background:rgba(255,255,255,.06)">Run it yourself</span>
+        </div>
+        <p>Favor the calm, stable names over the jumpy ones — the low-beta anomaly that says boring can pay. Neutral on demo data; bring your own universe to see if it holds.</p>
+        <div class="stats">
+          <div><div class="l">Tilt</div><span class="num">stable names</span></div>
+          <div><div class="l">Verdict</div><span class="num">yours to earn</span></div>
+        </div>
+      </div>
+
+      <div class="strat">
+        <div class="row1">
+          <h3>Reversal</h3>
+          <span class="verdict" style="color:var(--t3);background:rgba(255,255,255,.06)">Run it yourself</span>
+        </div>
+        <p>The mirror of momentum: lean toward recent losers on the bet that short-term moves overshoot and snap back. Neutral on the demo set — prove it or kill it on real history.</p>
+        <div class="stats">
+          <div><div class="l">Tilt</div><span class="num">recent losers</span></div>
+          <div><div class="l">Verdict</div><span class="num">yours to earn</span></div>
+        </div>
+      </div>
+
+      <div class="strat">
+        <div class="row1">
+          <h3>Blend — Momentum + Low-vol + Reversal</h3>
+          <span class="verdict" style="color:var(--t3);background:rgba(255,255,255,.06)">Run it yourself</span>
+        </div>
+        <p>Three signals stacked into one composite, on the hope that their mistakes cancel and their edges add. Combining factors doesn't earn a free pass — the blend faces the exact same trial as a single one.</p>
+        <div class="stats">
+          <div><div class="l">Inputs</div><span class="num">3 factors</span></div>
+          <div><div class="l">Verdict</div><span class="num">yours to earn</span></div>
+        </div>
+      </div>
+
+      <div class="strat">
+        <div class="row1">
+          <h3>Value + Quality</h3>
+          <span class="verdict" style="color:var(--t3);background:rgba(255,255,255,.06)">Run it yourself</span>
+        </div>
+        <p>Cheap <em>and</em> healthy — the classic pairing that screens out the value traps a price screen alone would buy. Neutral on demo data; whether the combination is more than the sum is yours to test.</p>
+        <div class="stats">
+          <div><div class="l">Inputs</div><span class="num">2 factors</span></div>
+          <div><div class="l">Verdict</div><span class="num">yours to earn</span></div>
+        </div>
+      </div>
+
+    </div>
+
+    <p class="micro" style="text-align:center">All figures above are illustrative results on synthetic demo data — quality is planted, momentum is not. They demonstrate the tool, not a real-world edge.</p>
+  </div>
+</section>
+
+<section>
+  <div class="wrap">
+    <div class="section-head center">
+      <span class="eyebrow">No favorites</span>
+      <h2>Every strategy gets the same trial</h2>
+      <p>There's no special lane for the factor you're hoping works. Quality, momentum, your own custom signal — all of them face the identical gauntlet before any verdict is printed.</p>
+    </div>
+
+    <div class="cards c3">
+      <div class="card">
+        <div class="ic">∆</div>
+        <h3>Deflated Sharpe</h3>
+        <p>A raw Sharpe ratio flatters you the more configurations you tried. The deflated version pays the multiple-testing tax back — discounting the result for every variant that was searched — so a number that only looked good by luck collapses to where it belongs.</p>
+      </div>
+      <div class="card">
+        <div class="ic">⊟</div>
+        <h3>PBO via CSCV walk-forward</h3>
+        <p>Combinatorially split the history, fit on some folds, test on the rest, and measure how often the in-sample best is below median out-of-sample. That probability of backtest overfitting is the honest read on whether the edge travels or was tailored to the past.</p>
+      </div>
+      <div class="card">
+        <div class="ic">∿</div>
+        <h3>Signal IC</h3>
+        <p>Before any equity curve, we check the raw correlation between the signal and the returns it's supposed to predict. Weak, unstable information coefficients are the early tell that a strategy is dressing up randomness as foresight.</p>
+      </div>
+    </div>
+  </div>
+</section>
+
+<section class="closing">
+  <div class="glow"></div>
+  <div class="wrap">
+    <h2>Stop reading our numbers. Run yours.</h2>
+    <p>These verdicts are about demo data. The only ones that matter are the ones your own history returns.</p>
+    <div class="ctas">
+      <a class="btn btn-primary btn-lg" href="pricing.html">Start free</a>
+      <a class="btn btn-lg" href="lab.html">See the Strategy Lab</a>
+    </div>
+  </div>
+</section>
+
+<footer><div class="wrap">
+  <div class="fcols">
+    <div class="brand"><a class="logo" href="index.html"><span class="mark">A</span>AlphaForge</a><p style="margin-top:14px">The research OS for emerging quant managers — the backtest that won't let you lie to yourself.</p></div>
+    <div class="fcol"><h4>Platform</h4><a href="lab.html">Strategy Lab</a><a href="datasets.html">Datasets</a><a href="strategies.html">Strategies</a><a href="pricing.html">Pricing</a></div>
+    <div class="fcol"><h4>Resources</h4><a href="learn.html">Learn</a><a href="docs.html">Documentation</a><a href="docs.html#methodology">Methodology</a></div>
+    <div class="fcol"><h4>Company</h4><a href="#">About</a><a href="#">Contact</a><a href="#">Status</a></div>
+  </div>
+  <div class="fbot"><div class="disc">AlphaForge is research software, not investment advice, and does not provide buy or sell recommendations. Backtested performance is hypothetical and not indicative of future results. © 2026 AlphaForge.</div><div>Research software, not advice.</div></div>
+</div></footer>
+<script>const n=document.getElementById('nav');addEventListener('scroll',()=>n.classList.toggle('scrolled',scrollY>8),{passive:true});</script>
+
+</body>
+</html>

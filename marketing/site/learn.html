@@ -1,0 +1,175 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Learn — AlphaForge</title>
+<meta name="description" content="Learning tracks on honest quant research — point-in-time backtesting, defeating overfitting, probability, codable price action, and AI signals. Distilled from the canonical literature the AlphaForge engine is built on.">
+<link rel="stylesheet" href="assets/site.css">
+</head>
+<body>
+
+<nav id="nav"><div class="wrap navrow">
+  <a class="logo" href="index.html"><span class="mark">A</span>AlphaForge</a>
+  <div class="navlinks">
+    <a href="lab.html">Platform</a>
+    <a href="datasets.html">Datasets</a>
+    <a href="strategies.html">Strategies</a>
+    <a href="learn.html" class="active">Learn</a>
+    <a href="docs.html">Docs</a>
+    <a href="pricing.html">Pricing</a>
+  </div>
+  <div class="navright"><a class="btn btn-ghost-sm" href="#">Sign in</a><a class="btn btn-primary" href="pricing.html">Start free</a></div>
+</div></nav>
+
+<header class="phero">
+  <div class="wrap">
+    <span class="eyebrow">Learn</span>
+    <h1>Learn to do quant research that holds up</h1>
+    <p class="sub">Every track here teaches a single defense against fooling yourself — drawn straight from the books the engine is built on, then made runnable in the Lab.</p>
+  </div>
+</header>
+
+<section>
+  <div class="wrap">
+    <div class="section-head center">
+      <span class="eyebrow">Learning tracks</span>
+      <h2>Five paths from idea to evidence</h2>
+      <p>Start with the discipline of an honest backtest, then climb into the statistics, the chart logic, and the AI signal work that separate a real edge from a lucky-looking curve.</p>
+    </div>
+
+    <div class="tracks">
+
+      <article class="track">
+        <div class="top">
+          <span class="lvl">Beginner</span>
+          <h3>Foundations of honest backtesting</h3>
+        </div>
+        <ul class="lessons">
+          <li>What "point-in-time" means and why yesterday's index membership lies to you</li>
+          <li>Charging the trade: commissions, slippage, and borrow before you trust a return</li>
+          <li>In-sample vs. out-of-sample, and why the split has to come first</li>
+          <li>The pretty equity curve trap — what a rising line still hides</li>
+          <li>Survivorship and look-ahead: the two leaks that flatter every beginner</li>
+        </ul>
+      </article>
+
+      <article class="track">
+        <div class="top">
+          <span class="lvl">Advanced</span>
+          <h3>Defeating overfitting</h3>
+        </div>
+        <ul class="lessons">
+          <li>Why a single train/test split quietly overstates your edge <span class="src">— López de Prado (AFML)</span></li>
+          <li>Combinatorial purged cross-validation, from intuition to code <span class="src">— López de Prado (AFML)</span></li>
+          <li>Purge and embargo: cutting the leakage that overlapping labels create <span class="src">— López de Prado (AFML)</span></li>
+          <li>Estimating the probability of backtest overfitting before you commit capital <span class="src">— López de Prado (AFML)</span></li>
+          <li>The deflated Sharpe ratio: discounting a result for how many you tried <span class="src">— López de Prado (AFML)</span></li>
+        </ul>
+      </article>
+
+      <article class="track">
+        <div class="top">
+          <span class="lvl">Intermediate</span>
+          <h3>Probability for quants</h3>
+        </div>
+        <ul class="lessons">
+          <li>Base rates and Bayes: updating a hypothesis without overreacting <span class="src">— Blitzstein &amp; Hwang (Intro to Probability)</span></li>
+          <li>The central limit theorem — what it promises and exactly where it breaks <span class="src">— Blitzstein &amp; Hwang (Intro to Probability)</span></li>
+          <li>Fat tails and why a Gaussian VaR quietly understates your risk <span class="src">— Blitzstein &amp; Hwang (Intro to Probability)</span></li>
+          <li>Expectation, variance, and reading a return distribution honestly <span class="src">— Blitzstein &amp; Hwang (Intro to Probability)</span></li>
+        </ul>
+      </article>
+
+      <article class="track">
+        <div class="top">
+          <span class="lvl">Intermediate</span>
+          <h3>Reading price action, made codable</h3>
+        </div>
+        <ul class="lessons">
+          <li>Trends and volume: turning visual intuition into a rule a machine can test <span class="src">— Edwards &amp; Magee (Technical Analysis of Stock Trends)</span></li>
+          <li>The 3% filter for separating a real break from market noise <span class="src">— Edwards &amp; Magee (Technical Analysis of Stock Trends)</span></li>
+          <li>From subjective chart pattern to a precise, falsifiable signal <span class="src">— Edwards &amp; Magee (Technical Analysis of Stock Trends)</span></li>
+          <li>Backtesting a classic chart rule without curve-fitting the thresholds <span class="src">— Edwards &amp; Magee (Technical Analysis of Stock Trends)</span></li>
+        </ul>
+      </article>
+
+      <article class="track">
+        <div class="top">
+          <span class="lvl">Advanced</span>
+          <h3>Quantamental &amp; AI signals</h3>
+        </div>
+        <ul class="lessons">
+          <li>Pulling structured numeric signals out of filings, not just sentiment scores</li>
+          <li>Measuring a signal's information coefficient — and trusting it only when it's stable</li>
+          <li>Fusing fundamentals with price without double-counting the same bet</li>
+          <li>Guarding an AI-derived feature against the same overfitting that traps any model</li>
+          <li>Turning a validated signal into a position the backtester can score honestly</li>
+        </ul>
+      </article>
+
+    </div>
+  </div>
+</section>
+
+<section style="padding-top:0">
+  <div class="wrap">
+    <div class="callout">
+      <strong>Every lesson is a defense against fooling yourself.</strong> The point isn't to collect techniques — it's to close the gaps where a hopeful researcher leaks future information, retries until something works, or mistakes a fragile fit for an edge. Each track maps directly onto a guardrail the engine enforces, so what you learn here is the same discipline your backtests run under.
+    </div>
+  </div>
+</section>
+
+<section style="padding-top:0">
+  <div class="wrap">
+    <div class="section-head center">
+      <span class="eyebrow">How you learn</span>
+      <h2>Read it, run it, then prove it</h2>
+      <p>No passive lectures. Each concept arrives as something you execute and check against your own data.</p>
+    </div>
+
+    <div class="cards c3">
+      <div class="card">
+        <div class="ic">▦</div>
+        <h3>Interactive notebooks</h3>
+        <p>Every lesson ships as a notebook you can edit and re-run — change an assumption, watch the result move, and build intuition by breaking things on purpose.</p>
+      </div>
+      <div class="card">
+        <div class="ic">▶</div>
+        <h3>Run it in the Lab</h3>
+        <p>Exercises hand off straight into the Strategy Lab, so the rule you just learned becomes a real backtest on point-in-time data within a click.</p>
+      </div>
+      <div class="card">
+        <div class="ic">✓</div>
+        <h3>Verify every claim</h3>
+        <p>We never ask you to take a number on faith. Each track ends by showing you how to stress-test the result and confirm the edge survives honest scrutiny.</p>
+      </div>
+    </div>
+  </div>
+</section>
+
+<section class="closing">
+  <div class="glow"></div>
+  <div class="wrap">
+    <h2>Learn the discipline. Then test your edge.</h2>
+    <p>Work through the tracks, then bring your idea into the Lab and let the engine hold it to the same standard.</p>
+    <div class="ctas">
+      <a class="btn btn-primary btn-lg" href="pricing.html">Start free</a>
+      <a class="btn btn-lg" href="lab.html">Explore the Lab</a>
+    </div>
+  </div>
+</section>
+
+<footer><div class="wrap">
+  <div class="fcols">
+    <div class="brand"><a class="logo" href="index.html"><span class="mark">A</span>AlphaForge</a><p style="margin-top:14px">The research OS for emerging quant managers — the backtest that won't let you lie to yourself.</p></div>
+    <div class="fcol"><h4>Platform</h4><a href="lab.html">Strategy Lab</a><a href="datasets.html">Datasets</a><a href="strategies.html">Strategies</a><a href="pricing.html">Pricing</a></div>
+    <div class="fcol"><h4>Resources</h4><a href="learn.html">Learn</a><a href="docs.html">Documentation</a><a href="docs.html#methodology">Methodology</a></div>
+    <div class="fcol"><h4>Company</h4><a href="#">About</a><a href="#">Contact</a><a href="#">Status</a></div>
+  </div>
+  <div class="fbot"><div class="disc">AlphaForge is research software, not investment advice, and does not provide buy or sell recommendations. Backtested performance is hypothetical and not indicative of future results. © 2026 AlphaForge.</div><div>Research software, not advice.</div></div>
+</div></footer>
+<script>const n=document.getElementById('nav');addEventListener('scroll',()=>n.classList.toggle('scrolled',scrollY>8),{passive:true});</script>
+
+</body>
+</html>

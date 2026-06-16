@@ -1,0 +1,151 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>AlphaForge — the research OS for emerging quant managers</title>
+<meta name="description" content="Design, backtest, and validate quant strategies with enforced anti-overfitting defenses: Deflated Sharpe, Probability of Backtest Overfitting, point-in-time data, and AI signal extraction.">
+<link rel="stylesheet" href="assets/site.css">
+</head>
+<body>
+
+<nav id="nav"><div class="wrap navrow">
+  <a class="logo" href="index.html"><span class="mark">A</span>AlphaForge</a>
+  <div class="navlinks">
+    <a href="lab.html">Platform</a>
+    <a href="datasets.html">Datasets</a>
+    <a href="strategies.html">Strategies</a>
+    <a href="learn.html">Learn</a>
+    <a href="docs.html">Docs</a>
+    <a href="pricing.html">Pricing</a>
+  </div>
+  <div class="navright"><a class="btn btn-ghost-sm" href="#">Sign in</a><a class="btn btn-primary" href="pricing.html">Start free</a></div>
+</div></nav>
+
+<header class="wrap hero">
+  <div class="pill"><span class="dotg"></span>Open beta · v0.1</div>
+  <h1>The research OS for emerging quant managers</h1>
+  <p class="sub">Design, backtest, and validate strategies in one place — with deflated Sharpe, overfitting probability, and point-in-time data enforced on every single run. The backtest that won't let you lie to yourself.</p>
+  <div class="ctas">
+    <a class="btn btn-primary btn-lg" href="pricing.html">Start free</a>
+    <a class="btn btn-lg" href="lab.html">Explore the platform</a>
+  </div>
+  <p class="micro num">point-in-time data<span class="sep">·</span>deterministic seeds<span class="sep">·</span>costs on every trade<br>Research software, not investment advice.</p>
+  <div class="canvas-zone" style="position:relative;margin-top:60px">
+    <div class="glow" style="top:-8%;width:760px;height:420px"></div>
+    <div class="shotbox" style="position:relative;z-index:1;aspect-ratio:16/10">
+      <img src="../assets/hero_product_canvas.png" alt="The AlphaForge workspace: a completed quality-factor run with a CREDIBLE verdict, equity curve, drawdown, and out-of-sample panels" style="height:100%;object-fit:cover;object-position:top">
+    </div>
+  </div>
+</header>
+
+<div class="proof" style="padding:44px 0;border-bottom:1px solid var(--hair)">
+  <div class="wrap"><div class="proofrow num" style="display:flex;justify-content:center;gap:48px;flex-wrap:wrap;color:var(--t3);font-size:14px">
+    <span style="opacity:.8">● Deflated Sharpe on every run</span>
+    <span style="opacity:.8">● Overfitting probability by default</span>
+    <span style="opacity:.8">● Point-in-time, look-ahead-proof</span>
+    <span style="opacity:.8">● 178 engine tests passing*</span>
+  </div></div>
+</div>
+
+<!-- everything the platform offers (the tabs) -->
+<section><div class="wrap">
+  <div class="section-head center">
+    <div class="eyebrow">One platform</div>
+    <h2>Everything from idea to validated strategy</h2>
+    <p>A complete research stack — the lab, the data, the strategy library, and the learning to use them well — built on a single honesty-first engine.</p>
+  </div>
+  <div class="cards c3">
+    <a class="card" href="lab.html"><div class="ic">⚗</div><h3>Strategy Lab</h3><p>Pick a universe and factor, run a point-in-time backtest, and get an out-of-sample verdict with the methodology attached.</p><span class="lnk">Open the Lab →</span></a>
+    <a class="card" href="datasets.html"><div class="ic">▦</div><h3>Datasets</h3><p>A tiered data ladder from free synthetic + market data up to point-in-time fundamentals — with honest labels about what each can and can't prove.</p><span class="lnk">Browse datasets →</span></a>
+    <a class="card" href="strategies.html"><div class="ic">◈</div><h3>Strategies</h3><p>A library of classic factors — momentum, value, quality, low-vol — each run through the full honesty stack so you see what survives and what doesn't.</p><span class="lnk">See strategies →</span></a>
+    <a class="card" href="learn.html"><div class="ic">◹</div><h3>Learn</h3><p>Courses on honest quant research, distilled from the canonical books — López de Prado, Bailey, Blitzstein, Edwards &amp; Magee.</p><span class="lnk">Start learning →</span></a>
+    <a class="card" href="docs.html"><div class="ic">⌘</div><h3>Documentation</h3><p>The engine, the metrics, and the API — every honesty guard documented and reproducible, never proprietary mystery.</p><span class="lnk">Read the docs →</span></a>
+    <a class="card" href="pricing.html"><div class="ic">◆</div><h3>Pricing</h3><p>Free to start on synthetic + market data. Paid tiers add point-in-time fundamentals, the AI copilot, and team workspaces.</p><span class="lnk">See pricing →</span></a>
+  </div>
+</div></section>
+
+<!-- the differentiation: the books -->
+<section style="border-top:1px solid var(--hair);background:var(--panel)"><div class="wrap">
+  <div class="section-head">
+    <div class="eyebrow">What makes it different</div>
+    <h2>The rigor is the product</h2>
+    <p>Most platforms hand you a pretty equity curve and stop. AlphaForge runs the defenses the literature says actually matter — operationalized straight from the canonical texts — and only calls a strategy credible when they all pass.</p>
+  </div>
+  <div class="cards c2">
+    <div class="card"><h3>Deflated &amp; Probabilistic Sharpe</h3><p>Bailey &amp; López de Prado. The headline isn't a naive Sharpe — it's one that discounts for fat tails, track length, and how many strategies you tried.</p></div>
+    <div class="card"><h3>Probability of Backtest Overfitting</h3><p>CSCV (combinatorially-symmetric cross-validation). Answers the question that kills quant books: "given I picked the best of N, how likely is it to disappoint out-of-sample?"</p></div>
+    <div class="card"><h3>Point-in-time, purged &amp; embargoed</h3><p>López de Prado's purge + embargo on every walk-forward fold. A value exists only from the date it was knowable; the past never moves.</p></div>
+    <div class="card"><h3>Fat-tail-aware risk</h3><p>Blitzstein's probability lessons as code — historical CVaR, skew/kurtosis, and base-rate guards, because Gaussian risk numbers lie when tails are fat.</p></div>
+    <div class="card"><h3>Factor attribution</h3><p>Every strategy is regressed on Fama-French / Carhart factor portfolios — so a "great" return that's really just cheap factor beta is exposed, not sold to you as alpha.</p></div>
+    <div class="card"><h3>Honest ML, not hype</h3><p>An optional model ladder — regularized linear → boosted trees → stacking — under purged cross-validation, reporting whether complexity actually beats the simple baseline out-of-sample. Usually it doesn't, and the tool says so.</p></div>
+  </div>
+</div></section>
+
+<!-- feature rows -->
+<section><div class="wrap">
+  <div class="frow">
+    <div class="txt">
+      <div class="eyebrow">The verdict</div>
+      <h2 style="margin-top:10px">Every run ends in a judgment</h2>
+      <p>CREDIBLE or NOT CREDIBLE — decided out-of-sample first, with the deflated Sharpe, the overfitting probability, and the honesty haircuts spelled out on the page. No cherry-picking, no hidden assumptions.</p>
+      <ul class="checks"><li>Out-of-sample walk-forward first, not full-sample</li><li>Trial counter deflates the Sharpe automatically</li><li>The methodology travels with the result</li></ul>
+    </div>
+    <div class="media"><img src="../assets/verdict_card_specimen.png" alt="A NOT CREDIBLE verdict card with the honesty haircuts spelled out"></div>
+  </div>
+  <div class="frow rev">
+    <div class="media"><img src="../assets/dsr_pbo_specimen.png" alt="Signal information-coefficient panel"></div>
+    <div class="txt">
+      <div class="eyebrow">Signal quality</div>
+      <h2 style="margin-top:10px">Judge the signal, not just the curve</h2>
+      <p>A good backtest can come from a bad signal plus luck. Every signal carries its information coefficient, IC decay, and out-of-sample sign stability — so a lucky curve on a meaningless signal can't sneak through.</p>
+      <ul class="checks"><li>Information coefficient with significance t-stat</li><li>IC decay across horizons</li><li>Rolling-window sign stability across eras</li></ul>
+    </div>
+  </div>
+  <div class="frow">
+    <div class="txt">
+      <div class="eyebrow">Reporting</div>
+      <h2 style="margin-top:10px">Tearsheets an allocator can audit</h2>
+      <p>Shareable research reports with the methodology footnoted on the page. The footnotes are the feature — what you send is exactly what was tested, traceable to code, data, and declared trials.</p>
+    </div>
+    <div class="media"><img src="../assets/tearsheet_specimen.png" alt="Equity-curve tearsheet, net of costs"></div>
+  </div>
+</div></section>
+
+<section class="numbers"><div class="wrap">
+  <div class="eyebrow">Rigor, quantified</div>
+  <div class="nb num" style="margin-top:24px">
+    <div class="stat"><div class="v">178</div><div class="l">engine tests passing*</div></div>
+    <div class="stat"><div class="v">100%</div><div class="l">runs with deflated Sharpe + PBO*</div></div>
+    <div class="stat"><div class="v">0</div><div class="l">look-ahead leaks, proven*</div></div>
+  </div>
+  <p style="font-size:13px;color:var(--t3);margin-top:26px">*Every figure verifiable in the public test suite — <a class="accent" href="docs.html#methodology">read the methodology</a>.</p>
+</div></section>
+
+<section class="closing">
+  <div class="glow"></div>
+  <div class="wrap">
+    <h2>Put your strategy on trial.</h2>
+    <p>Free to start. No card. Synthetic + market data work offline and deterministically.</p>
+    <div class="ctas"><a class="btn btn-primary btn-lg" href="pricing.html">Start free</a><a class="btn btn-lg" href="lab.html">Explore the platform</a></div>
+  </div>
+</section>
+
+<footer><div class="wrap">
+  <div class="fcols">
+    <div class="brand">
+      <a class="logo" href="index.html"><span class="mark">A</span>AlphaForge</a>
+      <p style="margin-top:14px">The research OS for emerging quant managers — the backtest that won't let you lie to yourself.</p>
+    </div>
+    <div class="fcol"><h4>Platform</h4><a href="lab.html">Strategy Lab</a><a href="datasets.html">Datasets</a><a href="strategies.html">Strategies</a><a href="pricing.html">Pricing</a></div>
+    <div class="fcol"><h4>Resources</h4><a href="learn.html">Learn</a><a href="docs.html">Documentation</a><a href="docs.html#methodology">Methodology</a></div>
+    <div class="fcol"><h4>Company</h4><a href="#">About</a><a href="#">Contact</a><a href="#">Status</a></div>
+  </div>
+  <div class="fbot">
+    <div class="disc">AlphaForge is research software, not investment advice, and does not provide buy or sell recommendations. Backtested performance is hypothetical and not indicative of future results. © 2026 AlphaForge.</div>
+    <div>Research software, not advice.</div>
+  </div>
+</div></footer>
+<script>const n=document.getElementById('nav');addEventListener('scroll',()=>n.classList.toggle('scrolled',scrollY>8),{passive:true});</script>
+</body>
+</html>

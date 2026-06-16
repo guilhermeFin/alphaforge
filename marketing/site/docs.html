@@ -1,0 +1,263 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Documentation — AlphaForge</title>
+<meta name="description" content="AlphaForge developer documentation: run honest backtests, deflated and probabilistic Sharpe, PBO/CSCV overfitting checks, walk-forward with purge and embargo, signal scorecards, and the FastAPI surface — every claim verified by a public test suite.">
+<link rel="stylesheet" href="assets/site.css">
+</head>
+<body>
+
+<nav id="nav"><div class="wrap navrow">
+  <a class="logo" href="index.html"><span class="mark">A</span>AlphaForge</a>
+  <div class="navlinks">
+    <a href="lab.html">Platform</a>
+    <a href="datasets.html">Datasets</a>
+    <a href="strategies.html">Strategies</a>
+    <a href="learn.html">Learn</a>
+    <a href="docs.html" class="active">Docs</a>
+    <a href="pricing.html">Pricing</a>
+  </div>
+  <div class="navright"><a class="btn btn-ghost-sm" href="#">Sign in</a><a class="btn btn-primary" href="pricing.html">Start free</a></div>
+</div></nav>
+
+<div class="wrap" style="padding:40px 0 0"><div class="eyebrow">Documentation</div><h1 style="font-size:40px;margin-top:10px">Build on an engine you can audit</h1></div>
+
+<div class="wrap docwrap">
+
+  <aside class="docnav">
+    <div class="g">Getting started</div>
+    <a href="#quickstart" class="active">Quickstart</a>
+    <a href="#installation">Installation</a>
+
+    <div class="g">The engine</div>
+    <a href="#backtest">Backtest</a>
+    <a href="#metrics">Metrics</a>
+    <a href="#walkforward">Walk-forward</a>
+
+    <div class="g">Honesty guards</div>
+    <a href="#deflated-sharpe">Deflated Sharpe</a>
+    <a href="#pbo">PBO / CSCV</a>
+    <a href="#trial-ledger">Trial ledger</a>
+
+    <div class="g">Signals &amp; data</div>
+    <a href="#signal-quality">Signal quality</a>
+    <a href="#data-providers">Data providers</a>
+    <a href="#factor-library">Factor library</a>
+
+    <div class="g">Reference</div>
+    <a href="#api">API</a>
+    <a href="#methodology">Methodology</a>
+  </aside>
+
+  <div class="doc">
+
+    <h2 id="quickstart">Quickstart</h2>
+    <p>AlphaForge is a research engine, not a chart toy. You hand it a price series and a signal, and it hands back an equity curve plus a verdict on whether the result is likely to survive contact with a live market. Everything runs from plain Python — there is no hidden state and no opaque scoring.</p>
+    <p>The core loop is one call: feed <span class="mono">backtest()</span> a <span class="mono">close</span> price series and a <span class="mono">signal</span> (your target position or weight per bar), and inspect the returned <span class="mono">BacktestResult</span>. The <span class="mono">summary()</span> method already folds in transaction costs and reports the statistics that matter under multiple testing.</p>
+    <pre class="code"><span class="c"># a complete honest backtest in five lines</span>
+<span class="k">from</span> research.backtest <span class="k">import</span> backtest
+
+res = backtest(close, signal, cost_bps=<span class="s">5.0</span>, execution_lag=<span class="s">1</span>)
+print(res.summary(n_trials=<span class="s">20</span>))   <span class="c"># Sharpe, deflated/probabilistic Sharpe, CVaR</span>
+equity = res.equity                <span class="c"># cost-adjusted equity curve</span></pre>
+    <p>The <span class="mono">n_trials</span> argument is the part most backtesters quietly skip. It tells the engine how many strategy variants you tried before settling on this one, so the reported Sharpe can be deflated for selection bias. Pass an honest number — that is the whole point.</p>
+    <div class="callout">A backtest that does not know how many configurations you searched cannot tell you whether the result is real. AlphaForge makes <span class="mono">n_trials</span> a first-class input precisely so it can refuse to flatter you.</div>
+
+    <h2 id="installation">Installation</h2>
+    <p>The research engine is a Python package with a small dependency footprint — NumPy and pandas for the maths, FastAPI and Uvicorn for the optional service layer. Clone the repository, create a virtual environment, and install in editable mode while you work against it.</p>
+    <pre class="code"><span class="c"># clone and install the research engine</span>
+git clone https://github.com/alphaforge/alphaforge.git
+<span class="k">cd</span> alphaforge
+python -m venv .venv <span class="k">&amp;&amp;</span> source .venv/bin/activate
+pip install -e <span class="s">"."</span>
+
+<span class="c"># run the verification suite — 178 tests, all green before you build on it</span>
+pytest -q</pre>
+    <p>Run the test suite before you trust a single number. AlphaForge ships its honesty guarantees as executable tests, not as marketing copy, so a clean <span class="mono">pytest</span> run is your proof that the engine behaves as documented on your machine.</p>
+
+    <h2 id="backtest">Backtest</h2>
+    <p>The <span class="mono">backtest()</span> function in <span class="mono">research/backtest.py</span> is the entry point for the whole engine. It applies execution lag so a signal observed on bar <em>t</em> trades on bar <em>t+1</em>, charges costs on every change in position, and compounds the result into an equity curve. No look-ahead, no costless rebalancing.</p>
+    <p>Costs are expressed in basis points per unit of turnover via <span class="mono">cost_bps</span>, and <span class="mono">periods_per_year</span> controls annualisation — 252 for daily bars, 52 for weekly, and so on. The defaults below are deliberately conservative.</p>
+    <pre class="code"><span class="k">from</span> research.backtest <span class="k">import</span> backtest
+
+res = backtest(
+    close,
+    signal,
+    cost_bps=<span class="s">5.0</span>,            <span class="c"># round-trip cost per unit turnover</span>
+    execution_lag=<span class="s">1</span>,         <span class="c"># trade on the bar after the signal</span>
+    periods_per_year=<span class="s">252</span>,    <span class="c"># daily annualisation</span>
+)
+
+<span class="c"># BacktestResult exposes the curve, the returns, and the verdict</span>
+res.equity        <span class="c"># cost-adjusted equity series</span>
+res.returns       <span class="c"># per-bar net returns</span>
+res.summary(n_trials=<span class="s">20</span>)   <span class="c"># dict of headline statistics</span></pre>
+    <p>The returned <span class="mono">BacktestResult</span> carries <span class="mono">.equity</span> and <span class="mono">.returns</span> for plotting or further analysis, while <span class="mono">.summary(n_trials)</span> rolls everything into the statistics described in the Metrics section.</p>
+
+    <h2 id="metrics">Metrics</h2>
+    <p>Performance statistics live in <span class="mono">research/metrics.py</span>. The high-level <span class="mono">summarize()</span> function produces the same dictionary that <span class="mono">BacktestResult.summary()</span> returns, but you can also call each statistic directly when you want to reason about one number at a time.</p>
+    <p>Three of these are the difference between a real edge and a curve-fit. <span class="mono">annualised_sharpe()</span> is the familiar headline. <span class="mono">probabilistic_sharpe_ratio()</span> asks whether the observed Sharpe is reliably above zero given the sample length and the higher moments of the return distribution. <span class="mono">deflated_sharpe_ratio()</span> goes further and discounts for the number of trials you ran.</p>
+    <pre class="code"><span class="k">from</span> research.metrics <span class="k">import</span> (
+    summarize, annualised_sharpe,
+    probabilistic_sharpe_ratio, deflated_sharpe_ratio,
+    conditional_var,
+)
+
+stats = summarize(res.returns, n_trials=<span class="s">20</span>)
+sr    = annualised_sharpe(res.returns)
+psr   = probabilistic_sharpe_ratio(res.returns)
+dsr   = deflated_sharpe_ratio(res.returns, n_trials=<span class="s">20</span>)
+cvar  = conditional_var(res.returns)   <span class="c"># historical tail loss (CVaR)</span></pre>
+    <p>The <span class="mono">conditional_var()</span> function reports historical CVaR — the average loss in the worst slice of the return distribution — so you size risk against the tail you actually saw, not a tidy normal approximation that pretends the tail is thin.</p>
+
+    <h2 id="walkforward">Walk-forward</h2>
+    <p>A single in-sample backtest is a hypothesis, not evidence. <span class="mono">research/walkforward.py</span> provides <span class="mono">walk_forward()</span>, which slices the history into sequential folds and evaluates each out-of-sample segment using only information available before it. The aggregate is far harder to overfit than one full-sample run.</p>
+    <p>The <span class="mono">purge_bars</span> and <span class="mono">embargo_bars</span> arguments are what make the split honest. Purging drops training observations whose labels overlap the test window; embargo holds out a buffer immediately after each test fold so leakage from autocorrelation cannot bleed across the boundary.</p>
+    <pre class="code"><span class="k">from</span> research.walkforward <span class="k">import</span> walk_forward, split_backtest
+
+wf = walk_forward(
+    close,
+    signal,
+    n_splits=<span class="s">5</span>,
+    cost_bps=<span class="s">5.0</span>,
+    purge_bars=<span class="s">5</span>,        <span class="c"># drop overlapping training labels</span>
+    embargo_bars=<span class="s">10</span>,     <span class="c"># buffer after each test fold</span>
+)
+
+<span class="c"># split_backtest() runs a single in/out-of-sample partition</span>
+single = split_backtest(close, signal, cost_bps=<span class="s">5.0</span>)</pre>
+    <p>Use <span class="mono">split_backtest()</span> when you want a single clean train/test partition rather than the full rolling sequence — for example, to sanity-check a candidate before committing it to a longer walk-forward run.</p>
+
+    <h2 id="deflated-sharpe">Deflated Sharpe</h2>
+    <p>The deflated Sharpe ratio is AlphaForge's central honesty guard. When you test many configurations and keep the best, the maximum Sharpe you observe is inflated by chance alone. <span class="mono">deflated_sharpe_ratio()</span> corrects for this by asking how impressive your best result is <em>relative to the distribution of best results you would expect from noise</em> after that many trials.</p>
+    <p>The mechanism is simple to use and hard to fool: the more variants you searched, the higher the bar your Sharpe must clear to register as significant. Feed it the net returns and the honest trial count.</p>
+    <pre class="code"><span class="k">from</span> research.metrics <span class="k">import</span> deflated_sharpe_ratio
+
+<span class="c"># the same strategy, judged against how hard you searched</span>
+dsr_few  = deflated_sharpe_ratio(res.returns, n_trials=<span class="s">5</span>)
+dsr_many = deflated_sharpe_ratio(res.returns, n_trials=<span class="s">500</span>)
+
+<span class="c"># dsr_many is lower: 500 trials means a high Sharpe is cheaper to find by luck</span></pre>
+    <p>A deflated Sharpe near or below zero is the engine telling you the result is indistinguishable from a lucky draw. That is a feature. The probabilistic Sharpe ratio is its companion for the single-trial case, accounting for sample length and the skew and kurtosis of returns.</p>
+
+    <h2 id="pbo">PBO / CSCV</h2>
+    <p>Where the deflated Sharpe judges a single chosen strategy, the Probability of Backtest Overfitting (PBO) judges your <em>selection process</em>. <span class="mono">research/overfitting.py</span> implements PBO via Combinatorially Symmetric Cross-Validation (CSCV): it repeatedly splits your trials into in-sample and out-of-sample halves and measures how often the in-sample winner underperforms out of sample.</p>
+    <p>Pass a returns matrix — one column per strategy variant, one row per bar — to <span class="mono">cscv_pbo()</span>. A PBO above 0.5 means your best in-sample strategy is more likely than not to be a below-median performer out of sample, which is a blunt signal that your search has overfit the data.</p>
+    <pre class="code"><span class="k">from</span> research.overfitting <span class="k">import</span> cscv_pbo, compact_pbo, pbo_from_factor_grid
+
+<span class="c"># returns_matrix: shape (n_bars, n_variants)</span>
+pbo = cscv_pbo(returns_matrix, n_splits=<span class="s">8</span>)
+print(pbo)   <span class="c"># &gt; 0.5 means the selection is probably overfit</span>
+
+<span class="c"># convenience wrappers for common shapes</span>
+quick = compact_pbo(returns_matrix)
+grid  = pbo_from_factor_grid(close, signal_grid)</pre>
+    <p>Use <span class="mono">pbo_from_factor_grid()</span> when your variants come from sweeping factor parameters — it builds the returns matrix from the grid for you and reports the PBO of the whole sweep, not just the winner you happened to like.</p>
+
+    <h2 id="trial-ledger">Trial ledger</h2>
+    <p>Honest deflation requires an honest trial count, and most overfitting happens quietly across sessions rather than in one obvious sweep. The <span class="mono">TrialLedger</span> in <span class="mono">research/trial_ledger.py</span> records every configuration you evaluate so that <span class="mono">n_trials</span> reflects your real search history instead of the one run you remember.</p>
+    <p>The ledger reports an <span class="mono">effective_n_trials</span> floor — correlated variants count for less than a full independent trial, but the count never drops below a conservative minimum. You can never accidentally tell the engine you searched less than you did.</p>
+    <pre class="code"><span class="k">from</span> research.trial_ledger <span class="k">import</span> TrialLedger
+
+ledger = TrialLedger()
+ledger.record(<span class="s">"momentum_20"</span>, res_a.returns)
+ledger.record(<span class="s">"momentum_40"</span>, res_b.returns)
+ledger.record(<span class="s">"meanrev_5"</span>,   res_c.returns)
+
+n = ledger.effective_n_trials()      <span class="c"># floored, correlation-aware</span>
+dsr = deflated_sharpe_ratio(best.returns, n_trials=n)</pre>
+    <p>Wire the ledger's <span class="mono">effective_n_trials()</span> straight into <span class="mono">deflated_sharpe_ratio()</span> and your significance test automatically accounts for the full breadth of your search.</p>
+
+    <h2 id="signal-quality">Signal quality</h2>
+    <p>Before a signal earns a backtest, it should earn a scorecard. <span class="mono">research/signal_quality.py</span> provides <span class="mono">scorecard()</span>, which evaluates a raw signal against forward returns and reports its predictive structure — information coefficient, sign stability, and decay — independent of any position-sizing or cost assumptions.</p>
+    <p>This separates two questions that backtests usually tangle together: does the signal contain information, and does your implementation extract it. A strong scorecard with a weak backtest points at execution; a weak scorecard means there was nothing to extract in the first place.</p>
+    <pre class="code"><span class="k">from</span> research.signal_quality <span class="k">import</span> (
+    scorecard, compact_scorecard, ic_sign_stability,
+)
+
+card = scorecard(signal, close)        <span class="c"># full diagnostic report</span>
+quick = compact_scorecard(signal, close)
+stability = ic_sign_stability(signal, close)   <span class="c"># does IC keep its sign?</span></pre>
+    <p>The <span class="mono">ic_sign_stability()</span> check is especially telling: an information coefficient that flips sign across sub-periods is usually noise wearing the costume of an edge.</p>
+
+    <h2 id="data-providers">Data providers</h2>
+    <p>Fundamental data is only useful if it is point-in-time, and survivorship or restatement bias is one of the quietest ways to manufacture a fake edge. <span class="mono">research/providers.py</span> exposes <span class="mono">get_fundamental_provider()</span>, a single factory that returns a provider conforming to one interface regardless of source.</p>
+    <p>The <span class="mono">"synthetic"</span> provider generates clean, reproducible data for tests and tutorials. The <span class="mono">"simfin"</span> and <span class="mono">"sharadar"</span> providers connect to real point-in-time datasets so your fundamentals reflect what was actually knowable on each date.</p>
+    <pre class="code"><span class="k">from</span> research.providers <span class="k">import</span> get_fundamental_provider
+
+<span class="c"># swap sources without touching downstream code</span>
+provider = get_fundamental_provider(<span class="s">"synthetic"</span>)   <span class="c"># or "simfin" / "sharadar"</span>
+obs = provider.fetch(symbols, fields)
+
+<span class="c"># point-in-time by construction — no look-ahead from restatements</span></pre>
+    <p>Because all three providers share an interface, you can prototype against synthetic data and switch to a paid point-in-time source by changing one string — the rest of your research code never knows the difference.</p>
+
+    <h2 id="factor-library">Factor library</h2>
+    <p>Common cross-sectional factors are implemented once, correctly, in <span class="mono">research/factor_lib.py</span> — including <span class="mono">gross_profitability</span>, <span class="mono">roe</span>, and a set of value and quality constructions. They consume the standardised fundamentals built by <span class="mono">build_fundamentals()</span> in <span class="mono">research/fundamentals.py</span>.</p>
+    <p>The workflow is deliberately linear: fetch point-in-time observations from a provider, assemble them into an aligned fundamentals panel, then compute factors over that panel. Each step is independently testable.</p>
+    <pre class="code"><span class="k">from</span> research.fundamentals <span class="k">import</span> build_fundamentals
+<span class="k">from</span> research.factor_lib <span class="k">import</span> gross_profitability, roe
+
+fund = build_fundamentals(obs, index, symbols)
+
+gp  = gross_profitability(fund)   <span class="c"># quality factor</span>
+qroe = roe(fund)                  <span class="c"># return on equity</span>
+
+<span class="c"># feed a factor straight into a signal, then backtest it honestly</span>
+signal = gp.rank(axis=<span class="s">1</span>)</pre>
+    <p>Building factors from a point-in-time panel keeps the look-ahead discipline of the data layer intact all the way through to your signal, so the honesty you bought at the provider is not quietly thrown away three lines later.</p>
+
+    <h2 id="api">API</h2>
+    <p>The engine ships an optional FastAPI service for teams that prefer to call the backtester over HTTP. It exposes a small, stable surface: <span class="mono">GET /health</span> for liveness, <span class="mono">GET /</span> for service metadata, <span class="mono">POST /backtest</span> to run an evaluation, and <span class="mono">POST /session/reset</span> to clear server-side state between runs.</p>
+    <p>Interactive, auto-generated documentation is served at <span class="mono">/docs</span>, so you can explore request and response schemas in the browser without leaving the running service.</p>
+    <pre class="code"><span class="c"># start the service</span>
+uvicorn api.main:app --reload
+
+<span class="c"># run a backtest over HTTP</span>
+curl -X POST http://localhost:8000/backtest \
+  -H <span class="s">"Content-Type: application/json"</span> \
+  -d <span class="s">'{"close": [100, 101, 99, 102], "signal": [0, 1, 1, 0], "cost_bps": 5.0, "n_trials": 20}'</span>
+
+<span class="c"># clear server-side session state</span>
+curl -X POST http://localhost:8000/session/reset
+
+<span class="c"># liveness check</span>
+curl http://localhost:8000/health</pre>
+    <p>The response from <span class="mono">POST /backtest</span> mirrors <span class="mono">BacktestResult.summary()</span> — the same deflated and probabilistic Sharpe, CVaR, and headline statistics you get from the Python API. The HTTP layer is a thin wrapper, not a separate implementation.</p>
+
+    <h2 id="methodology">Methodology</h2>
+    <p>AlphaForge exists to make it hard to lie to yourself. Every design choice in the engine is in service of one promise: a number it reports is a number that has already survived the standard ways backtests deceive their authors. The guarantees below are not aspirational — each is enforced and verified.</p>
+    <ul>
+      <li><strong>Point-in-time data.</strong> Fundamentals flow through <span class="mono">get_fundamental_provider()</span> and <span class="mono">build_fundamentals()</span> so factors only ever see what was knowable on each date — no restatement or survivorship leakage.</li>
+      <li><strong>Costs and execution lag.</strong> <span class="mono">backtest()</span> charges <span class="mono">cost_bps</span> on every change in position and applies <span class="mono">execution_lag</span> so signals trade on the following bar. There is no free rebalancing and no look-ahead fill.</li>
+      <li><strong>Deflated and probabilistic Sharpe.</strong> <span class="mono">deflated_sharpe_ratio()</span> discounts for the number of trials searched; <span class="mono">probabilistic_sharpe_ratio()</span> accounts for sample length and return higher moments. A high raw Sharpe is not enough.</li>
+      <li><strong>Probability of Backtest Overfitting.</strong> <span class="mono">cscv_pbo()</span> measures how often your in-sample winner fails out of sample, judging the selection process rather than the survivor.</li>
+      <li><strong>Honest trial counting.</strong> <span class="mono">TrialLedger</span> tracks your real search history and reports a correlation-aware <span class="mono">effective_n_trials</span> floor that feeds the deflation directly.</li>
+      <li><strong>Purge and embargo.</strong> <span class="mono">walk_forward()</span> supports <span class="mono">purge_bars</span> and <span class="mono">embargo_bars</span> to prevent label overlap and autocorrelation leakage across train/test boundaries.</li>
+    </ul>
+    <div class="callout">All of the above is verified by a public test suite of <strong>178 tests</strong>. The honesty guarantees are executable: if the engine ever stopped charging costs, applying lag, or deflating for trials, a test would fail. Run <span class="mono">pytest -q</span> and read the assertions for yourself — the documentation and the code cannot drift apart.</div>
+    <p>This is the whole philosophy in one sentence: a backtest should be adversarial toward its author. AlphaForge takes that seriously so that when a strategy clears its bar, you can trust the result enough to risk capital on it.</p>
+
+  </div>
+
+</div>
+
+<footer><div class="wrap">
+  <div class="fcols">
+    <div class="brand"><a class="logo" href="index.html"><span class="mark">A</span>AlphaForge</a><p style="margin-top:14px">The research OS for emerging quant managers — the backtest that won't let you lie to yourself.</p></div>
+    <div class="fcol"><h4>Platform</h4><a href="lab.html">Strategy Lab</a><a href="datasets.html">Datasets</a><a href="strategies.html">Strategies</a><a href="pricing.html">Pricing</a></div>
+    <div class="fcol"><h4>Resources</h4><a href="learn.html">Learn</a><a href="docs.html">Documentation</a><a href="docs.html#methodology">Methodology</a></div>
+    <div class="fcol"><h4>Company</h4><a href="#">About</a><a href="#">Contact</a><a href="#">Status</a></div>
+  </div>
+  <div class="fbot"><div class="disc">AlphaForge is research software, not investment advice, and does not provide buy or sell recommendations. Backtested performance is hypothetical and not indicative of future results. © 2026 AlphaForge.</div><div>Research software, not advice.</div></div>
+</div></footer>
+<script>
+const n=document.getElementById('nav');addEventListener('scroll',()=>n.classList.toggle('scrolled',scrollY>8),{passive:true});
+const links=[...document.querySelectorAll('.docnav a')];const secs=links.map(a=>document.querySelector(a.getAttribute('href'))).filter(Boolean);
+addEventListener('scroll',()=>{let cur=secs[0];for(const s of secs){if(s.getBoundingClientRect().top<120)cur=s;}links.forEach(a=>a.classList.toggle('active',a.getAttribute('href')==='#'+(cur&&cur.id)));},{passive:true});
+</script>
+
+</body>
+</html>

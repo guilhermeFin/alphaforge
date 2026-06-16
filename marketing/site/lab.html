@@ -1,0 +1,183 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>Platform — AlphaForge</title>
+  <meta name="description" content="The Strategy Lab is AlphaForge's research workspace — go from a raw idea to an out-of-sample verdict in one place. Point-in-time backtests, walk-forward validation, deflated Sharpe, and a shareable report with methodology attached.">
+  <link rel="stylesheet" href="assets/site.css">
+</head>
+<body>
+
+<nav id="nav"><div class="wrap navrow">
+  <a class="logo" href="index.html"><span class="mark">A</span>AlphaForge</a>
+  <div class="navlinks">
+    <a href="lab.html" class="active">Platform</a>
+    <a href="datasets.html">Datasets</a>
+    <a href="strategies.html">Strategies</a>
+    <a href="learn.html">Learn</a>
+    <a href="docs.html">Docs</a>
+    <a href="pricing.html">Pricing</a>
+  </div>
+  <div class="navright"><a class="btn btn-ghost-sm" href="#">Sign in</a><a class="btn btn-primary" href="pricing.html">Start free</a></div>
+</div></nav>
+
+<!-- ============ PAGE HERO ============ -->
+<header class="phero">
+  <div class="wrap">
+    <div class="eyebrow">The Strategy Lab</div>
+    <h1>From a hunch to a verdict, in one workspace.</h1>
+    <p class="sub">The Strategy Lab is where an idea becomes a tested strategy. Define it, run it against point-in-time history, and read an out-of-sample verdict that won't flatter you — all without leaving the page.</p>
+  </div>
+</header>
+
+<!-- ============ WORKFLOW FEATURE ROW ============ -->
+<section>
+  <div class="wrap">
+    <div class="frow">
+      <div class="txt">
+        <div class="eyebrow">The honest workflow</div>
+        <h2>Five steps. No shortcuts to a clean equity curve.</h2>
+        <p>The Lab puts the whole research loop in front of you, in the order that keeps you honest — the easy in-sample win is never the last word.</p>
+        <ul class="checks">
+          <li><strong>Pick a universe</strong> — choose the assets and the window, with survivorship-aware membership baked in.</li>
+          <li><strong>Choose a factor</strong> — wire up your signal from the library or your own logic, fully editable.</li>
+          <li><strong>Run a point-in-time backtest</strong> — every bar sees only what was knowable then, never tomorrow's data.</li>
+          <li><strong>Read the out-of-sample verdict</strong> — held-out and walk-forward results decide whether it survives.</li>
+          <li><strong>Ship a shareable report</strong> — one link, methodology attached, nothing hidden behind it.</li>
+        </ul>
+      </div>
+      <div class="media">
+        <img src="../assets/hero_product_canvas.png" alt="The AlphaForge Strategy Lab workspace showing the research canvas from universe to verdict">
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ============ WHAT THE LAB GIVES YOU ============ -->
+<section>
+  <div class="wrap">
+    <div class="section-head center">
+      <div class="eyebrow">Inside the Lab</div>
+      <h2>Six readouts that decide the verdict.</h2>
+      <p>Every run produces the same evidence pack. The out-of-sample result leads; everything else exists to test whether it holds.</p>
+    </div>
+    <div class="cards c3">
+      <div class="card">
+        <div class="ic">◎</div>
+        <h3>The verdict</h3>
+        <p>One unambiguous call — survives or doesn't — driven by held-out performance, not the in-sample fit you tuned against.</p>
+      </div>
+      <div class="card">
+        <div class="ic">⌁</div>
+        <h3>Equity &amp; drawdown tearsheet</h3>
+        <p>The full cumulative curve paired with its underwater plot, so the worst stretch is as visible as the best.</p>
+      </div>
+      <div class="card">
+        <div class="ic">⊟</div>
+        <h3>PBO panel</h3>
+        <p>The probability of backtest overfitting, estimated across your trial set, so you know the odds the edge was luck.</p>
+      </div>
+      <div class="card">
+        <div class="ic">∿</div>
+        <h3>Signal IC</h3>
+        <p>Information coefficient over time — whether the signal actually ranked future returns, or just happened to line up once.</p>
+      </div>
+      <div class="card">
+        <div class="ic">⇶</div>
+        <h3>Walk-forward with purge</h3>
+        <p>Rolling out-of-sample windows with embargo and purge between train and test, so leakage at the seams can't pad the result.</p>
+      </div>
+      <div class="card">
+        <div class="ic">⚠</div>
+        <h3>Tail risk &amp; CVaR</h3>
+        <p>Conditional value-at-risk and the shape of the loss tail — because the average return never tells you what the bad week costs.</p>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ============ VERDICT FEATURE ROW ============ -->
+<section>
+  <div class="wrap">
+    <div class="frow">
+      <div class="txt">
+        <div class="eyebrow">Out-of-sample first</div>
+        <h2>The verdict reads the data you didn't get to tune.</h2>
+        <p>In-sample, almost anything looks like alpha. The Lab refuses to lead with it. The verdict card states the call against held-out and walk-forward returns, then shows the deflated Sharpe — discounted for how many variants you tried — right next to it.</p>
+        <ul class="checks">
+          <li>Survives / doesn't survive, stated plainly at the top.</li>
+          <li>Deflated Sharpe adjusts for the trials behind the run.</li>
+          <li>Every number links back to the exact methodology that produced it.</li>
+        </ul>
+      </div>
+      <div class="media">
+        <img src="../assets/verdict_card_specimen.png" alt="An AlphaForge verdict card showing the out-of-sample call alongside the deflated Sharpe ratio">
+      </div>
+    </div>
+
+    <div class="frow rev">
+      <div class="txt">
+        <div class="eyebrow">Overfitting, quantified</div>
+        <h2>See the odds your edge was an accident.</h2>
+        <p>Search hard enough and the past always offers a strategy that looks brilliant. The PBO panel puts a number on that danger, and the DSR panel beside it tells you whether the Sharpe survives once the size of your search is priced in. Together they turn "looks good" into a probability you can defend.</p>
+        <ul class="checks">
+          <li>Probability of backtest overfitting across your full trial set.</li>
+          <li>Deflated Sharpe that accounts for selection, length, and skew.</li>
+          <li>Read it before you commit capital, not after a drawdown explains it.</li>
+        </ul>
+      </div>
+      <div class="media">
+        <img src="../assets/dsr_pbo_specimen.png" alt="AlphaForge DSR and PBO panels quantifying overfitting risk and deflated Sharpe">
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ============ NUMBERS BAND ============ -->
+<section class="numbers">
+  <div class="wrap">
+    <div class="nb">
+      <div class="stat">
+        <div class="v num">178</div>
+        <div class="l">Engine tests on every release*</div>
+      </div>
+      <div class="stat">
+        <div class="v num">100%</div>
+        <div class="l">Of runs report a deflated Sharpe*</div>
+      </div>
+      <div class="stat">
+        <div class="v num">0</div>
+        <div class="l">Look-ahead leaks by construction*</div>
+      </div>
+    </div>
+    <p class="micro" style="margin-top:24px">*Measured against the AlphaForge research engine's automated suite; point-in-time data access is enforced at the engine level so future information cannot reach a past bar.</p>
+  </div>
+</section>
+
+<!-- ============ CLOSING CTA ============ -->
+<section class="closing">
+  <div class="glow"></div>
+  <div class="wrap">
+    <h2>Test your next idea the honest way.</h2>
+    <p>Open the Strategy Lab and run an idea end to end — universe to verdict — in a single sitting.</p>
+    <div class="ctas">
+      <a class="btn btn-primary btn-lg" href="pricing.html">Start free</a>
+      <a class="btn btn-lg" href="docs.html#methodology">Read the methodology</a>
+    </div>
+  </div>
+</section>
+
+<footer><div class="wrap">
+  <div class="fcols">
+    <div class="brand"><a class="logo" href="index.html"><span class="mark">A</span>AlphaForge</a><p style="margin-top:14px">The research OS for emerging quant managers — the backtest that won't let you lie to yourself.</p></div>
+    <div class="fcol"><h4>Platform</h4><a href="lab.html">Strategy Lab</a><a href="datasets.html">Datasets</a><a href="strategies.html">Strategies</a><a href="pricing.html">Pricing</a></div>
+    <div class="fcol"><h4>Resources</h4><a href="learn.html">Learn</a><a href="docs.html">Documentation</a><a href="docs.html#methodology">Methodology</a></div>
+    <div class="fcol"><h4>Company</h4><a href="#">About</a><a href="#">Contact</a><a href="#">Status</a></div>
+  </div>
+  <div class="fbot"><div class="disc">AlphaForge is research software, not investment advice, and does not provide buy or sell recommendations. Backtested performance is hypothetical and not indicative of future results. © 2026 AlphaForge.</div><div>Research software, not advice.</div></div>
+</div></footer>
+<script>const n=document.getElementById('nav');addEventListener('scroll',()=>n.classList.toggle('scrolled',scrollY>8),{passive:true});</script>
+
+</body>
+</html>
