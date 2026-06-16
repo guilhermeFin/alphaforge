@@ -313,7 +313,14 @@ def make_synthetic_raw_fundamentals(
 
     rows = []
     period_ends = idx[period_days - 1::period_days]
-    for pe in period_ends:
+    # Time-varying share count so the share-issuance factor has real dispersion. The
+    # per-period issuance drift is drawn from a SEPARATE rng, so the main data stream
+    # (and every other factor) stays byte-identical; it is INDEPENDENT of quality, so
+    # "low_issuance" is honest NOISE on synthetic data — but no longer identically zero.
+    _iss_rng = np.random.default_rng(seed + 12345)
+    _issuance = _iss_rng.normal(0.004, 0.012, size=(len(period_ends), n))  # ~0.4%/q, can be <0
+    _share_path = shares[None, :] * np.cumprod(1.0 + _issuance, axis=0)
+    for pi, pe in enumerate(period_ends):
         pos = idx.searchsorted(pe + pd.Timedelta(days=reporting_lag_days))
         if pos >= T:
             continue
@@ -391,7 +398,7 @@ def make_synthetic_raw_fundamentals(
                 "ebit": ebit,
                 "interest_expense": interest_expense,
                 "net_income": net_income,
-                "shares_diluted": shares[j],
+                "shares_diluted": float(_share_path[pi, j]),
                 "total_assets": assets,
                 "current_assets": current_assets,
                 "cash": cash,

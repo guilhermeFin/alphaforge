@@ -15,7 +15,7 @@ from typing import Any
 import numpy as np
 import pandas as pd
 
-from research import data, factors, fundamentals, signal_quality, stats_guards, overfitting
+from research import data, factors, factor_lib, fundamentals, signal_quality, stats_guards, overfitting
 from research.backtest import backtest
 from research.walkforward import split_backtest, walk_forward
 from research.trial_ledger import TrialLedger
@@ -27,8 +27,75 @@ DISCLAIMER = (
     "never an edge."
 )
 
-FACTORS = ("momentum", "reversal", "lowvol", "blend", "value", "quality", "value_quality")
-FUNDAMENTAL_FACTORS = ("value", "quality", "value_quality")
+# --- Factor catalog: the selectable strategies, grouped for the Strategy Lab UI.
+# kind="price" uses the lookback/skip price window; kind="fundamental" uses
+# point-in-time filings (lookback/skip ignored). Each entry carries a plain-English
+# blurb so the UI can explain it. This is the single source of truth shared by the
+# API validator and the UI dropdowns.
+FACTOR_CATALOG = [
+    # Technical / price
+    {"name": "momentum", "label": "Momentum (12-1)", "category": "Technical (price)", "kind": "price",
+     "blurb": "Buy recent winners, short recent losers — skipping the last month."},
+    {"name": "reversal", "label": "Short-term reversal", "category": "Technical (price)", "kind": "price",
+     "blurb": "Bet that recent short-term moves reverse."},
+    {"name": "lowvol", "label": "Low volatility", "category": "Technical (price)", "kind": "price",
+     "blurb": "Prefer calm, stable stocks over jumpy ones."},
+    {"name": "blend", "label": "Blend (momentum + low-vol + reversal)", "category": "Technical (price)", "kind": "price",
+     "blurb": "Equal-weight mix of the three price factors."},
+    # Value
+    {"name": "value", "label": "Value (composite)", "category": "Value", "kind": "fundamental",
+     "blurb": "Cheapness composite across earnings, book and cash-flow yields."},
+    {"name": "earnings_yield", "label": "Earnings yield (E/P)", "category": "Value", "kind": "fundamental",
+     "blurb": "Earnings ÷ price — higher means cheaper."},
+    {"name": "book_to_price", "label": "Book-to-price (B/P)", "category": "Value", "kind": "fundamental",
+     "blurb": "Book equity ÷ price — the classic value characteristic."},
+    {"name": "fcf_yield", "label": "Free-cash-flow yield", "category": "Value", "kind": "fundamental",
+     "blurb": "Free cash flow ÷ price — cash-based cheapness."},
+    # Quality
+    {"name": "quality", "label": "Quality (composite)", "category": "Quality", "kind": "fundamental",
+     "blurb": "Profitability/health composite (the planted edge in the synthetic demo)."},
+    {"name": "gross_profitability", "label": "Gross profitability", "category": "Quality", "kind": "fundamental",
+     "blurb": "Gross profit ÷ assets — Novy-Marx's robust quality signal."},
+    {"name": "operating_profitability", "label": "Operating profitability", "category": "Quality", "kind": "fundamental",
+     "blurb": "Fama-French operating profitability over book equity."},
+    {"name": "roe", "label": "Return on equity (ROE)", "category": "Quality", "kind": "fundamental",
+     "blurb": "Net income ÷ shareholder equity."},
+    {"name": "roa", "label": "Return on assets (ROA)", "category": "Quality", "kind": "fundamental",
+     "blurb": "Net income ÷ total assets."},
+    {"name": "earnings_quality", "label": "Earnings quality (low accruals)", "category": "Quality", "kind": "fundamental",
+     "blurb": "Low Sloan accruals — earnings backed by cash, not estimates."},
+    {"name": "low_leverage", "label": "Low leverage", "category": "Quality", "kind": "fundamental",
+     "blurb": "Less debt ÷ assets — lower balance-sheet risk."},
+    # Investment
+    {"name": "conservative_investment", "label": "Conservative investment", "category": "Investment", "kind": "fundamental",
+     "blurb": "Low asset growth — aggressive expanders tend to underperform."},
+    {"name": "low_issuance", "label": "Low share issuance", "category": "Investment", "kind": "fundamental",
+     "blurb": "Less new stock issued — persistent diluters underperform."},
+    # Multi-factor
+    {"name": "value_quality", "label": "Value + Quality", "category": "Multi-factor", "kind": "fundamental",
+     "blurb": "Cheap AND healthy — value and quality combined."},
+]
+
+FACTORS = tuple(f["name"] for f in FACTOR_CATALOG)
+PRICE_FACTORS = tuple(f["name"] for f in FACTOR_CATALOG if f["kind"] == "price")
+LEGACY_FUNDAMENTAL = ("value", "quality", "value_quality")  # composites via fundamentals.py
+# factor_lib single-factor fundamentals: name -> (factor_lib function, sign).
+# sign=-1 flips "lower is better" signals (leverage/accruals/asset-growth/issuance)
+# so the cross-sectional rank points the economically correct way.
+FACTORLIB_SPECS = {
+    "earnings_yield": ("earnings_yield", +1),
+    "book_to_price": ("book_to_price", +1),
+    "fcf_yield": ("fcf_yield", +1),
+    "gross_profitability": ("gross_profitability", +1),
+    "operating_profitability": ("operating_profitability", +1),
+    "roe": ("roe", +1),
+    "roa": ("roa", +1),
+    "earnings_quality": ("sloan_accruals", -1),
+    "low_leverage": ("leverage", -1),
+    "conservative_investment": ("asset_growth", -1),
+    "low_issuance": ("net_equity_issuance", -1),
+}
+FUNDAMENTAL_FACTORS = LEGACY_FUNDAMENTAL + tuple(FACTORLIB_SPECS.keys())
 PROVIDERS = ("synthetic", "yfinance")
 
 # hard input bounds — the service refuses absurd requests instead of hanging
@@ -224,14 +291,24 @@ def run_backtest_workflow(req: dict, ledger: "TrialLedger | None" = None) -> dic
         close = world.close
         if len(close) < 400:
             raise WorkflowError("fundamental factors need >= 400 days (several quarters + OOS)")
-        obs = data.make_synthetic_fundamentals(world, seed=p["seed"])
-        fund = fundamentals.build_fundamentals(obs, close.index, list(close.columns))
-        if p["factor"] == "value":
-            score = fundamentals.value_score(fund, close)
-        elif p["factor"] == "quality":
-            score = fundamentals.quality_score(fund, close)
+        if p["factor"] in LEGACY_FUNDAMENTAL:
+            # Composite value/quality scores from the ratio-metric generator.
+            obs = data.make_synthetic_fundamentals(world, seed=p["seed"])
+            fund = fundamentals.build_fundamentals(obs, close.index, list(close.columns))
+            if p["factor"] == "value":
+                score = fundamentals.value_score(fund, close)
+            elif p["factor"] == "quality":
+                score = fundamentals.quality_score(fund, close)
+            else:
+                score = fundamentals.value_quality_score(fund, close)
         else:
-            score = fundamentals.value_quality_score(fund, close)
+            # Single-factor library factors run on the RAW canonical fields; the
+            # sign flips "lower is better" signals so the rank points the right way.
+            obs = data.make_synthetic_raw_fundamentals(world, seed=p["seed"])
+            fund = fundamentals.build_fundamentals(obs, close.index, list(close.columns))
+            fn_name, sign = FACTORLIB_SPECS[p["factor"]]
+            raw = getattr(factor_lib, fn_name)(fund, close)
+            score = factors.cross_sectional_zscore(raw if sign > 0 else -raw)
     else:
         if p["provider"] == "synthetic":
             panel = data.get_panel(

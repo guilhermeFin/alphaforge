@@ -22,7 +22,7 @@ import pandas as pd
 import plotly.graph_objects as go
 import streamlit as st
 
-from api.service import DISCLAIMER, WorkflowError, run_backtest_workflow
+from api.service import DISCLAIMER, FACTOR_CATALOG, WorkflowError, run_backtest_workflow
 from research.trial_ledger import TrialLedger
 
 API_URL = os.environ.get("ALPHAFORGE_API", "http://127.0.0.1:8000")
@@ -110,7 +110,9 @@ if SHOT_MODE and "result" not in st.session_state:
 
 # ----------------------------- sidebar -----------------------------
 with st.sidebar:
-    st.header("Workflow")
+    st.header("Strategy Lab")
+
+    # --- session status: the trial counter that drives the honesty haircut ---
     _led = st.session_state["ledger"]
     _ta_now = (st.session_state.get("result") or {}).get("trial_audit") or {}
     _distinct = _ta_now.get("distinct_count")
@@ -130,6 +132,9 @@ with st.sidebar:
         st.session_state.pop("result", None)
         st.rerun()
     st.divider()
+
+    # --- 1 · Universe & data ---
+    st.markdown("#### 1 · Universe & data")
     provider = st.radio("Data source", ["synthetic", "yfinance"],
                         help="Synthetic = offline, deterministic engine demo. "
                              "Yahoo Finance = real (survivorship-biased!) free data.")
@@ -146,25 +151,50 @@ with st.sidebar:
         # default-adjacent selection never triggers a "lookback too long" 400.
         periods = st.slider("Days (synthetic)", 400, 3000, 1512, step=50)
         seed = st.number_input("Seed", min_value=0, value=42, step=1)
+    st.divider()
 
-    _factors = ["momentum", "reversal", "lowvol", "blend", "value", "quality", "value_quality"]
-    _fidx = _factors.index(_qp.get("factor")) if (SHOT_MODE and _qp.get("factor") in _factors) else 0
-    factor = st.selectbox("Factor", _factors, index=_fidx)
-    if factor in ("value", "quality", "value_quality"):
-        st.caption("📒 Fundamental factors use point-in-time fundamentals (filing-date lagged) — "
-                   "synthetic provider only in this MVP, since free data isn't point-in-time.")
-    lookback = st.slider("Lookback (days)", 21, 504, 252, step=21)
-    # skip must stay below lookback (the service rejects skip >= lookback); cap the
-    # widget so the UI can't produce a request the engine will refuse.
-    skip = st.slider("Skip recent (days)", 0, max(7, lookback - 7),
-                     min(21, lookback - 7), step=7,
-                     help="Momentum convention: skip the last month (short-term reversal).")
-    cost_bps = st.slider("Cost (bps per unit turnover)", 0.0, 50.0, 5.0, step=0.5)
+    # --- 2 · Strategy (grouped factor picker from the shared catalog) ---
+    st.markdown("#### 2 · Strategy")
+    _cats = list(dict.fromkeys(f["category"] for f in FACTOR_CATALOG))
+    # default selection -> momentum, or the ?factor= query param in screenshot mode
+    # match the SHOT_MODE auto-run default ("quality") so the sidebar selection and the
+    # rendered run never disagree in a screenshot.
+    _want = _qp.get("factor", "quality") if SHOT_MODE else None
+    _want_entry = next((f for f in FACTOR_CATALOG if f["name"] == _want), None)
+    _cat_idx = _cats.index(_want_entry["category"]) if _want_entry else 0
+    category = st.selectbox("Factor family", _cats, index=_cat_idx,
+                            help="Pick a family, then a specific factor below.")
+    _in_cat = [f for f in FACTOR_CATALOG if f["category"] == category]
+    _names = [f["name"] for f in _in_cat]
+    _labels = [f["label"] for f in _in_cat]
+    _f_idx = _names.index(_want) if (_want_entry and _want in _names) else 0
+    _label = st.selectbox("Factor", _labels, index=_f_idx)
+    _entry = _in_cat[_labels.index(_label)]
+    factor = _entry["name"]
+    st.caption("ℹ️ " + _entry["blurb"])
+    if _entry["kind"] == "price":
+        lookback = st.slider("Lookback (days)", 21, 504, 252, step=21)
+        # skip must stay below lookback (the service rejects skip >= lookback); cap the
+        # widget so the UI can't produce a request the engine will refuse.
+        skip = st.slider("Skip recent (days)", 0, max(7, lookback - 7),
+                         min(21, lookback - 7), step=7,
+                         help="Momentum convention: skip the last month (short-term reversal).")
+    else:
+        lookback, skip = 252, 21  # ignored by fundamental factors; kept valid for the API
+        st.caption("📒 Fundamental factor — uses point-in-time filings (filing-date lagged). "
+                   "Synthetic provider only in this MVP (free data isn't point-in-time).")
+    st.divider()
+
+    # --- 3 · Costs & honesty ---
+    st.markdown("#### 3 · Costs & honesty")
+    cost_bps = st.slider("Cost (bps per unit turnover)", 0.0, 50.0, 5.0, step=0.5,
+                         help="Trading friction charged on every change in position.")
     n_trials = st.slider("Variants tried (honesty input)", 1, 500, 50,
                          help="How many strategy variations you have explored, including "
                               "everything you tried and discarded. Drives the Deflated "
                               "Sharpe haircut. Be honest — that's the whole point.")
-    run = st.button("Run honest backtest", type="primary", use_container_width=True)
+    st.divider()
+    run = st.button("▶  Run honest backtest", type="primary", use_container_width=True)
 
 # ----------------------------- run -----------------------------
 if run:
@@ -220,104 +250,118 @@ c3.metric("Max drawdown", fmt(card['max_drawdown'], '.2%'))
 c4.metric("Deflated SR (OOS)", fmt(wf_dsr, '.3f'))
 c5.metric("Hit rate", fmt(card['hit_rate'], '.1%'))
 
-# ----------------------------- charts -----------------------------
-eq = pd.DataFrame(res["equity_curve"])
-dd = pd.DataFrame(res["drawdown_curve"])
-left, right = st.columns([3, 2])
-with left:
-    fig = go.Figure(go.Scatter(x=eq["date"], y=eq["value"], mode="lines", name="equity"))
-    fig.update_layout(title="Equity curve (net of costs)", height=380,
-                      margin=dict(l=10, r=10, t=40, b=10))
-    st.plotly_chart(fig, use_container_width=True)
-with right:
-    fig2 = go.Figure(go.Scatter(x=dd["date"], y=dd["value"], mode="lines",
-                                fill="tozeroy", name="drawdown"))
-    fig2.update_layout(title="Drawdown", height=380, margin=dict(l=10, r=10, t=40, b=10))
-    st.plotly_chart(fig2, use_container_width=True)
+# ----------------------------- detail tabs -----------------------------
+# The dense detail is organized into tabs so the page reads top-down: verdict and
+# headline numbers above, then drill into Performance / Honesty / Signal / Overfitting.
+t_perf, t_honest, t_signal, t_pbo, t_details = st.tabs(
+    ["📈 Performance", "🛡️ Honesty checks", "🎯 Signal quality", "🎲 Overfitting", "📋 Details"])
 
-# ----------------------------- honesty panels -----------------------------
-a, b, c = st.columns(3)
-with a:
-    st.subheader("Out-of-sample (70/30)")
-    st.write(f"In-sample Sharpe: **{fmt(oos['in_sample_sharpe'], '+.3f')}**")
-    st.write(f"Out-of-sample Sharpe: **{fmt(oos['out_sample_sharpe'], '+.3f')}**")
-    st.write(f"Degradation: **{fmt(oos['degradation'], '+.3f')}**")
-    st.write(("🔴 **Overfit warning** — the edge decays out-of-sample"
-              if oos["overfit_warning"] else "🟢 No IS→OOS decay"))
-    st.write(("🟢 OOS record is statistically significant"
-              if oos["oos_significant"] else "🟡 OOS record not yet significant (PSR < 0.95)"))
-with b:
-    folds = wf.get("n_oos_folds", "?") if "error" not in wf else 0
-    st.subheader(f"Walk-forward ({folds} OOS folds)")
-    if "error" in wf:
-        st.write(f"n/a: {wf['error']}")
+with t_perf:
+    eq = pd.DataFrame(res["equity_curve"])
+    dd = pd.DataFrame(res["drawdown_curve"])
+    left, right = st.columns([3, 2])
+    with left:
+        fig = go.Figure(go.Scatter(x=eq["date"], y=eq["value"], mode="lines", name="equity"))
+        fig.update_layout(title="Equity curve (net of costs)", height=380,
+                          margin=dict(l=10, r=10, t=40, b=10))
+        st.plotly_chart(fig, use_container_width=True)
+    with right:
+        fig2 = go.Figure(go.Scatter(x=dd["date"], y=dd["value"], mode="lines",
+                                    fill="tozeroy", name="drawdown"))
+        fig2.update_layout(title="Drawdown", height=380, margin=dict(l=10, r=10, t=40, b=10))
+        st.plotly_chart(fig2, use_container_width=True)
+
+with t_honest:
+    st.caption("Three independent attempts to disprove the result. A credible strategy survives all three.")
+    a, b, c = st.columns(3)
+    with a:
+        st.markdown("**Out-of-sample (70/30)**")
+        st.write(f"In-sample Sharpe: **{fmt(oos['in_sample_sharpe'], '+.3f')}**")
+        st.write(f"Out-of-sample Sharpe: **{fmt(oos['out_sample_sharpe'], '+.3f')}**")
+        st.write(f"Degradation: **{fmt(oos['degradation'], '+.3f')}**")
+        st.write(("🔴 **Overfit warning** — the edge decays out-of-sample"
+                  if oos["overfit_warning"] else "🟢 No IS→OOS decay"))
+        st.write(("🟢 OOS record is statistically significant"
+                  if oos["oos_significant"] else "🟡 OOS record not yet significant (PSR < 0.95)"))
+    with b:
+        folds = wf.get("n_oos_folds", "?") if "error" not in wf else 0
+        st.markdown(f"**Walk-forward ({folds} OOS folds)**")
+        if "error" in wf:
+            st.write(f"n/a: {wf['error']}")
+        else:
+            st.write(f"Fold OOS Sharpes: {wf['fold_oos_sharpes']}")
+            st.write(f"Stitched OOS Sharpe: **{fmt(wf['stitched_oos_sharpe'], '+.3f')}**")
+            st.write(f"Deflated SR (folds-as-trials): **{fmt(wf['deflated_sr'], '.3f')}**")
+            st.write("🟢 passes" if wf["passes"] else "🔴 does not pass")
+            st.caption(f"Purged at fold boundaries: {wf.get('total_purged_bars', 0)} bars "
+                       f"(purge {wf.get('purge_bars', 0)} + embargo {wf.get('embargo_bars', 0)}) — "
+                       f"no lookback leak into out-of-sample.")
+    with c:
+        st.markdown("**Tail risk**")
+        st.write(f"Skew: **{fmt(tails.get('skew'), '+.2f')}** · "
+                 f"Excess kurtosis: **{fmt(tails.get('excess_kurtosis'), '.1f')}**")
+        st.write(f"Jarque-Bera p: {fmt(tails.get('jarque_bera_p'), '.2g')}")
+        st.write(("🟢 returns ≈ Normal" if tails.get("returns_are_normal")
+                  else "🔴 FAT TAILS — Gaussian VaR understates risk"))
+        st.caption(tails.get("verdict", ""))
+        st.write(f"CVaR 95%: **{fmt(card.get('cvar_95'), '.2%')}** · "
+                 f"CVaR 99%: **{fmt(card.get('cvar_99'), '.2%')}** _(historical, per-day loss)_")
+        if card.get("cvar_verdict"):
+            st.caption(card["cvar_verdict"])
+
+with t_signal:
+    sigq = res.get("signal_quality") or {}
+    if sigq:
+        st.markdown("**Is the signal itself predictive? (Information Coefficient)**")
+        s1, s2, s3, s4 = st.columns(4)
+        s1.metric("Mean IC", fmt(sigq.get("mean_ic"), ".4f"))
+        s2.metric("IC t-stat", fmt(sigq.get("ic_tstat"), ".2f"))
+        s3.metric("IC hit-rate", fmt(sigq.get("ic_hit_rate"), ".0%"))
+        s4.metric("Signal autocorr", fmt(sigq.get("rank_autocorr"), ".2f"))
+        st.write(("🟢 The signal carries statistically significant predictive information (|t| > 2)"
+                  if sigq.get("significant") else
+                  "🔴 The signal is NOT statistically predictive — a good backtest here would be luck"))
+        decay = sigq.get("ic_decay") or {}
+        if decay:
+            st.write("IC by horizon: " + " · ".join(f"{k}d = {fmt(v, '+.3f')}" for k, v in decay.items()))
+        st.caption("IC = cross-sectional rank correlation between the signal today and the return that "
+                   "follows it. A credible backtest should rest on a signal with a real, significant IC.")
     else:
-        st.write(f"Fold OOS Sharpes: {wf['fold_oos_sharpes']}")
-        st.write(f"Stitched OOS Sharpe: **{fmt(wf['stitched_oos_sharpe'], '+.3f')}**")
-        st.write(f"Deflated SR (folds-as-trials): **{fmt(wf['deflated_sr'], '.3f')}**")
-        st.write("🟢 passes" if wf["passes"] else "🔴 does not pass")
-        st.caption(f"Purged at fold boundaries: {wf.get('total_purged_bars', 0)} bars "
-                   f"(purge {wf.get('purge_bars', 0)} + embargo {wf.get('embargo_bars', 0)}) — "
-                   f"no lookback leak into out-of-sample.")
-with c:
-    st.subheader("Tail risk")
-    st.write(f"Skew: **{fmt(tails.get('skew'), '+.2f')}** · "
-             f"Excess kurtosis: **{fmt(tails.get('excess_kurtosis'), '.1f')}**")
-    st.write(f"Jarque-Bera p: {fmt(tails.get('jarque_bera_p'), '.2g')}")
-    st.write(("🟢 returns ≈ Normal" if tails.get("returns_are_normal")
-              else "🔴 FAT TAILS — Gaussian VaR understates risk"))
-    st.caption(tails.get("verdict", ""))
-    st.write(f"CVaR 95%: **{fmt(card.get('cvar_95'), '.2%')}** · "
-             f"CVaR 99%: **{fmt(card.get('cvar_99'), '.2%')}** _(historical, per-day loss)_")
-    if card.get("cvar_verdict"):
-        st.caption(card["cvar_verdict"])
+        st.caption("No signal-quality scorecard available for this run.")
 
-sigq = res.get("signal_quality") or {}
-if sigq:
-    st.subheader("Is the signal itself predictive? (Information Coefficient)")
-    s1, s2, s3, s4 = st.columns(4)
-    s1.metric("Mean IC", fmt(sigq.get("mean_ic"), ".4f"))
-    s2.metric("IC t-stat", fmt(sigq.get("ic_tstat"), ".2f"))
-    s3.metric("IC hit-rate", fmt(sigq.get("ic_hit_rate"), ".0%"))
-    s4.metric("Signal autocorr", fmt(sigq.get("rank_autocorr"), ".2f"))
-    st.write(("🟢 The signal carries statistically significant predictive information (|t| > 2)"
-              if sigq.get("significant") else
-              "🔴 The signal is NOT statistically predictive — a good backtest here would be luck"))
-    decay = sigq.get("ic_decay") or {}
-    if decay:
-        st.write("IC by horizon: " + " · ".join(f"{k}d = {fmt(v, '+.3f')}" for k, v in decay.items()))
-    st.caption("IC = cross-sectional rank correlation between the signal today and the return that "
-               "follows it. A credible backtest should rest on a signal with a real, significant IC.")
+with t_pbo:
+    pbo = res.get("pbo") or {}
+    if pbo and "error" not in pbo and not pbo.get("insufficient"):
+        st.markdown("**Probability of Backtest Overfitting (PBO)**")
+        p1, p2 = st.columns([1, 2])
+        with p1:
+            st.metric("PBO", fmt(pbo.get("pbo"), ".0%"))
+            st.write("🟢 robust" if not pbo.get("overfit") else "🔴 overfit risk")
+            st.caption(pbo.get("verdict", ""))
+        with p2:
+            hist = pbo.get("histogram") or {}
+            edges, counts = hist.get("edges") or [], hist.get("counts") or []
+            if counts and len(edges) == len(counts) + 1:
+                centers = [round((edges[i] + edges[i + 1]) / 2, 3) for i in range(len(counts))]
+                figp = go.Figure(go.Bar(x=centers, y=counts))
+                figp.add_vline(x=0.0, line_dash="dash", line_color="#888")
+                figp.update_layout(
+                    title="OOS rank-logit of the in-sample-best config across CSCV splits "
+                          "(mass left of 0 = below-median out-of-sample = overfit)",
+                    xaxis_title="logit(out-of-sample rank)",
+                    height=300, margin=dict(l=10, r=10, t=55, b=10))
+                st.plotly_chart(figp, use_container_width=True)
+        st.caption("PBO = the fraction of combinatorial splits where the best in-sample config lands in "
+                   "the LOSING half out-of-sample (logit ≤ 0). > 50% means the search is overfitting itself.")
+    elif pbo.get("insufficient"):
+        st.caption(f"PBO: n/a — {pbo.get('note') or 'insufficient data for CSCV'}")
+    elif pbo.get("error"):
+        st.caption(f"PBO: n/a — {pbo['error']}")
+    else:
+        st.caption("PBO not computed for this run.")
 
-pbo = res.get("pbo") or {}
-if pbo and "error" not in pbo and not pbo.get("insufficient"):
-    st.subheader("Probability of Backtest Overfitting (PBO)")
-    p1, p2 = st.columns([1, 2])
-    with p1:
-        st.metric("PBO", fmt(pbo.get("pbo"), ".0%"))
-        st.write("🟢 robust" if not pbo.get("overfit") else "🔴 overfit risk")
-        st.caption(pbo.get("verdict", ""))
-    with p2:
-        hist = pbo.get("histogram") or {}
-        edges, counts = hist.get("edges") or [], hist.get("counts") or []
-        if counts and len(edges) == len(counts) + 1:
-            centers = [round((edges[i] + edges[i + 1]) / 2, 3) for i in range(len(counts))]
-            figp = go.Figure(go.Bar(x=centers, y=counts))
-            figp.add_vline(x=0.0, line_dash="dash", line_color="#888")
-            figp.update_layout(
-                title="OOS rank-logit of the in-sample-best config across CSCV splits "
-                      "(mass left of 0 = below-median out-of-sample = overfit)",
-                xaxis_title="logit(out-of-sample rank)",
-                height=300, margin=dict(l=10, r=10, t=55, b=10))
-            st.plotly_chart(figp, use_container_width=True)
-    st.caption("PBO = the fraction of combinatorial splits where the best in-sample config lands in "
-               "the LOSING half out-of-sample (logit ≤ 0). > 50% means the search is overfitting itself.")
-elif pbo.get("insufficient"):
-    st.caption(f"PBO: n/a — {pbo.get('note') or 'insufficient data for CSCV'}")
-elif pbo.get("error"):
-    st.caption(f"PBO: n/a — {pbo['error']}")
-
-with st.expander("Full scorecard"):
+with t_details:
+    st.caption("Every raw scorecard value, for the detail-oriented.")
     # cast to str: the scorecard mixes floats with text (e.g. cvar_verdict), which
     # a single Arrow column can't hold — stringifying keeps the debug table honest.
     _scoredf = pd.DataFrame([card]).T.rename(columns={0: "value"})

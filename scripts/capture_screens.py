@@ -151,6 +151,10 @@ def main():
             page = ctx.new_page()
             page.goto(f"{BASE}/?shot=1&factor=quality&trials=20&sb=0")
             wait_ready(page)
+            # the IC panel now lives in the "Signal quality" tab — activate it so the
+            # elements are visible (Playwright bounding_box is null for hidden tabs).
+            page.get_by_role("tab", name="Signal quality").click()
+            page.wait_for_timeout(1500)
             head = page.get_by_text("Is the signal itself predictive?")
             tail = page.get_by_text("IC = cross-sectional rank correlation").first
             clip = union_clip(page, [head, tail])

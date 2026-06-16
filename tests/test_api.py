@@ -156,6 +156,24 @@ def test_response_includes_pbo_and_cvar():
     assert "NaN" not in client.post("/backtest", json=_small_req(periods=800)).text
 
 
+def test_factorlib_factors_are_selectable_and_run():
+    from api.service import FACTOR_CATALOG, FACTORS
+    assert len(FACTORS) == len(FACTOR_CATALOG)  # catalog and validator agree
+    # a quality-family factor_lib factor runs and, on the quality-planted synthetic
+    # world, earns CREDIBLE (proves the new wiring passes genuine signals)
+    body = client.post("/backtest", json=_small_req(factor="gross_profitability",
+                                                    periods=1512, n_trials=10)).json()
+    assert body["verdict"].startswith("CREDIBLE"), body["verdict"]
+    assert body["meta"]["effective_lookback"] is None      # fundamental -> no price lookback
+    assert "error" in body["pbo"]                           # PBO grid is price-only -> n/a
+    # value + "lower is better" sign factors all run without error (status 200)
+    for f in ("earnings_yield", "book_to_price", "low_leverage", "earnings_quality",
+              "conservative_investment", "low_issuance"):
+        r = client.post("/backtest", json=_small_req(factor=f, periods=1200, n_trials=5))
+        assert r.status_code == 200, (f, r.text)
+        assert r.json()["verdict"].startswith(("CREDIBLE", "NOT CREDIBLE"))
+
+
 def test_pbo_grid_distinct_for_capped_factors():
     # reversal caps lookback at 63 and lowvol at 252 inside _score; the grid is built
     # in EFFECTIVE space so it must still yield >= 2 DISTINCT configs (not identical
