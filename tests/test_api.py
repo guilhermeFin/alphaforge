@@ -1,5 +1,6 @@
 import numpy as np
 import pandas as pd
+import pytest
 from fastapi.testclient import TestClient
 
 from api.main import app
@@ -170,6 +171,23 @@ def test_response_includes_attribution():
     assert "error" not in a2
     assert a2["model"] == "carhart4"
     assert a2.get("fundamentals_used") is False
+
+
+def test_ml_compare_rejects_yfinance():
+    # provider guard fires BEFORE any ML import, so this needs no ML deps installed
+    r = client.post("/ml-compare", json=_small_req(provider="yfinance", symbols=["AAPL", "MSFT"]))
+    assert r.status_code in (400, 422)
+
+
+def test_model_comparison_runs_reduced():
+    pytest.importorskip("xgboost")
+    pytest.importorskip("lightgbm")
+    from api.service import run_model_comparison
+    out = run_model_comparison(_small_req(periods=600), model_names=["elastic_net", "lightgbm"],
+                               n_splits=4)
+    assert out["leaderboard"] and {"model", "oos_rank_ic"} <= set(out["leaderboard"][0].keys())
+    assert "complexity_beats_linear" in out and out["verdict"]
+    assert out["n_splits"] == 4
 
 
 def test_factorlib_factors_are_selectable_and_run():

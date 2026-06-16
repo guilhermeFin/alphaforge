@@ -22,7 +22,8 @@ import pandas as pd
 import plotly.graph_objects as go
 import streamlit as st
 
-from api.service import DISCLAIMER, FACTOR_CATALOG, WorkflowError, run_backtest_workflow
+from api.service import (DISCLAIMER, FACTOR_CATALOG, WorkflowError,
+                         run_backtest_workflow, run_model_comparison)
 from research.trial_ledger import TrialLedger
 
 API_URL = os.environ.get("ALPHAFORGE_API", "http://127.0.0.1:8000")
@@ -85,6 +86,17 @@ def run_request(payload: dict) -> dict:
     return run_backtest_workflow(payload, ledger=st.session_state["ledger"])
 
 
+def run_ml_request(payload: dict) -> dict:
+    """Opt-in ML model comparison — slow (~1-2 min). Same API/in-process split as run_request."""
+    if st.session_state.get("api_mode"):
+        r = httpx.post(f"{API_URL}/ml-compare", json=payload, timeout=600.0,
+                       cookies=st.session_state.get("af_cookies", {}))
+        if r.status_code != 200:
+            raise WorkflowError(r.json().get("detail", f"API error {r.status_code}"))
+        return r.json()
+    return run_model_comparison(payload)
+
+
 if "ledger" not in st.session_state:
     st.session_state["ledger"] = TrialLedger()
 if "api_mode" not in st.session_state:
@@ -107,6 +119,7 @@ if SHOT_MODE and "result" not in st.session_state:
         "start": "2015-01-02",
     }
     st.session_state["result"] = run_backtest_workflow(_payload)
+    st.session_state["last_payload"] = _payload
 
 # ----------------------------- sidebar -----------------------------
 with st.sidebar:
@@ -202,6 +215,8 @@ if run:
                "lookback": lookback, "skip": skip, "cost_bps": cost_bps,
                "gross": 1.0, "n_trials": n_trials, "periods": periods,
                "seed": int(seed), "start": "2015-01-02"}
+    st.session_state["last_payload"] = payload   # reused by the opt-in ML comparison
+    st.session_state.pop("ml_result", None)       # stale once the universe changes
     try:
         with st.spinner("Running point-in-time backtest…"):
             st.session_state["result"] = run_request(payload)
@@ -253,9 +268,9 @@ c5.metric("Hit rate", fmt(card['hit_rate'], '.1%'))
 # ----------------------------- detail tabs -----------------------------
 # The dense detail is organized into tabs so the page reads top-down: verdict and
 # headline numbers above, then drill into Performance / Honesty / Signal / Overfitting.
-t_perf, t_honest, t_signal, t_pbo, t_attr, t_details = st.tabs(
+t_perf, t_honest, t_signal, t_pbo, t_attr, t_ml, t_details = st.tabs(
     ["📈 Performance", "🛡️ Honesty checks", "🎯 Signal quality", "🎲 Overfitting",
-     "🧬 Attribution", "📋 Details"])
+     "🧬 Attribution", "🤖 ML models", "📋 Details"])
 
 with t_perf:
     eq = pd.DataFrame(res["equity_curve"])
@@ -393,6 +408,40 @@ with t_attr:
         st.caption("Regression of the strategy's daily returns on Fama-French / Carhart factor "
                    "portfolios. High R² with an insignificant alpha means the 'edge' is mostly "
                    "factor beta you could buy cheaply.")
+
+with t_ml:
+    st.caption("Compare a ladder of models (regularized linear → trees → boosting → stacking) "
+               "under leak-aware purged cross-validation. The honest question: does added "
+               "complexity actually beat the simple linear baseline OUT-OF-SAMPLE?")
+    _lp = st.session_state.get("last_payload") or {}
+    if _lp.get("provider") != "synthetic":
+        st.info("ML comparison needs the **synthetic** provider — it builds a point-in-time "
+                "feature panel from fundamentals, which free data can't supply yet.")
+    else:
+        st.warning("⏳ Runs the full leak-aware ladder — expect **~1–2 minutes**. "
+                   "It does not consume a trial.")
+        if st.button("Run model comparison", type="primary"):
+            try:
+                with st.spinner("Fitting the model ladder under purged CV… (~1–2 min)"):
+                    st.session_state["ml_result"] = run_ml_request(_lp)
+            except WorkflowError as e:
+                st.error(f"ML comparison problem: {e}")
+            except Exception as e:
+                st.error(f"ML comparison failed: {e}")
+    mlr = st.session_state.get("ml_result")
+    if mlr and "leaderboard" in mlr:
+        _beats = mlr.get("complexity_beats_linear")
+        (st.info if _beats else st.success)(
+            "ℹ️ A nonlinear model beats the linear baseline out-of-sample here — treat with "
+            "the usual skepticism (small samples can flatter complexity)." if _beats else
+            "✅ Linear is enough — added complexity does NOT beat the ElasticNet baseline "
+            "out-of-sample. Ship the simple model; the extra capacity isn't buying edge.")
+        st.caption(mlr.get("verdict", ""))
+        st.dataframe(pd.DataFrame(mlr["leaderboard"]), use_container_width=True, hide_index=True)
+        st.caption(f"{mlr.get('n_symbols', '?')} names × {mlr.get('n_days', '?')} days · "
+                   f"{len(mlr.get('factors_used', []))} features · "
+                   f"purged {mlr.get('n_splits', '?')}-fold CV · {mlr.get('horizon', '?')}-day "
+                   "forward-return labels. OOS = out-of-sample (the model never saw it).")
 
 with t_details:
     st.caption("Every raw scorecard value, for the detail-oriented.")

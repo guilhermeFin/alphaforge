@@ -25,6 +25,7 @@ from pydantic import BaseModel, Field  # noqa: E402
 
 from api.service import (  # noqa: E402
     DISCLAIMER, FACTORS, PROVIDERS, WorkflowError, run_backtest_workflow,
+    run_model_comparison,
 )
 from research.trial_ledger import TrialLedger  # noqa: E402
 
@@ -98,3 +99,15 @@ def run_backtest(req: BacktestRequest, request: Request, response: Response) -> 
 def reset_session(request: Request, response: Response, reason: str = "") -> dict:
     """Honest, logged reset of this workspace's trial counter (never silent)."""
     return _get_ledger(request, response).reset(reason=reason)
+
+
+@app.post("/ml-compare")
+def ml_compare(req: BacktestRequest) -> dict:
+    """Opt-in, slow (~1-2 min): leak-aware ML model-ladder comparison. Does NOT
+    consume a trial — it evaluates models, not a single strategy hypothesis."""
+    try:
+        return run_model_comparison(req.model_dump())
+    except WorkflowError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"model comparison failed: {type(e).__name__}: {e}")

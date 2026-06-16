@@ -441,3 +441,54 @@ def run_backtest_workflow(req: dict, ledger: "TrialLedger | None" = None) -> dic
         "equity_curve": _downsample_curve(res.equity),
         "drawdown_curve": _downsample_curve(dd),
     })
+
+
+# factors used as ML features (resolved by model_eval against factor_lib)
+ML_FEATURE_FACTORS = ("gross_profitability", "roe", "operating_margin",
+                      "book_to_price", "asset_growth", "momentum_12_1")
+
+
+def run_model_comparison(req: dict, factor_names: tuple | None = None,
+                         model_names=None, n_splits: int = 6, horizon: int = 21) -> dict:
+    """Opt-in, heavyweight: compare the ML model ladder under leak-aware purged CV.
+
+    Returns the leaderboard + the honest 'does complexity beat the linear baseline
+    out-of-sample?' verdict. Synthetic provider only (needs point-in-time fundamentals),
+    and the ML extras must be installed (`pip install alphaforge[ml]`). This is NOT run
+    on a normal backtest — it is slow by design (the full ladder is ~1-2 min).
+    """
+    p = _validate(req)
+    if p["provider"] != "synthetic":
+        raise WorkflowError(
+            "model comparison needs the synthetic provider — point-in-time fundamentals "
+            "for the feature panel aren't wired for free data yet")
+    try:
+        from research.model_eval import build_feature_panel, compare_ladder
+    except ImportError:
+        raise WorkflowError("ML extras not installed — run `pip install alphaforge[ml]` "
+                            "(scikit-learn, xgboost, lightgbm)")
+
+    syms = p["symbols"] or [f"S{i:02d}" for i in range(20)]
+    world = data.make_synthetic_world(syms, start=p["start"], periods=p["periods"],
+                                      seed=p["seed"], quality_to_drift=0.0016)
+    close = world.close
+    if len(close) < 400:
+        raise WorkflowError("model comparison needs >= 400 days")
+    fund = fundamentals.build_fundamentals(
+        data.make_synthetic_raw_fundamentals(world, seed=p["seed"]),
+        close.index, list(close.columns))
+    feats = list(factor_names or ML_FEATURE_FACTORS)
+    X, y, fmeta = build_feature_panel(close, fund, feats, horizon=horizon)
+    kw = {"n_splits": n_splits}
+    if model_names is not None:
+        kw["model_names"] = model_names
+    result = compare_ladder(X, y, fmeta["label_start"], fmeta["label_end"], **kw)
+    return _jsonable({
+        "factors_used": feats,
+        "n_symbols": int(close.shape[1]),
+        "n_days": int(len(close)),
+        "horizon": horizon,
+        "n_splits": n_splits,
+        "disclaimer": DISCLAIMER,
+        **result,
+    })
