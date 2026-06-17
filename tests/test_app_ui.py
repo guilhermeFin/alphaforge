@@ -61,3 +61,15 @@ def test_click_runs_and_renders_verdict(at):
 
     # the disclaimer must be on the page
     assert any("not investment advice" in str(c.value) for c in at.caption)
+
+
+def test_ml_tab_exposes_feature_and_model_pickers(at):
+    """The ML tab lets the user compose the feature panel + ladder (Part B wiring).
+    A momentum run uses the synthetic provider, so the pickers render (not the
+    'needs synthetic' notice)."""
+    _run_button(at).click()
+    at.run()
+    assert not at.exception
+    labels = [m.label for m in at.multiselect]
+    assert any("Features" in lbl for lbl in labels), labels
+    assert any("Models in the ladder" in lbl for lbl in labels), labels

@@ -29,6 +29,12 @@ data/
 *.feather
 cache/
 
+# Accounts data layer — the local SQLite store holds (encrypted) customer data; never commit it
+*.db
+*.db-wal
+*.db-shm
+alphaforge.db
+
 # Marketing build artifacts (verification screenshots)
 marketing/assets/_*.png
 

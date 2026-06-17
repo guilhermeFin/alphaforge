@@ -11,12 +11,12 @@ AlphaForge is built so that the moment it holds customer data, that data is prot
 is: minimize what we hold, encrypt what we keep, gate every access, watch for abuse, and
 fail safe.
 
-**Current scope (important):** AlphaForge today is a research engine + API + UI. It stores
-**no customer PII, no passwords, and no payment data** — there are no user accounts yet. So
-the security work splits in two:
+**Current scope (important):** AlphaForge in production today is a research engine + API + UI
+that stores **no customer PII, no passwords, and no payment data** — no accounts are deployed yet.
+The security work splits in two:
 
 1. **Harden the surface that exists now** (the public compute API + secrets handling) — done, see *Controls in place*.
-2. **Design the data layer to be secure before the first customer record is ever written** — see *Data-protection roadmap*. The cheapest time to get this right is before there is anything to lose.
+2. **Build the data layer secure-by-default before the first customer record is ever written** — the cheapest time to get this right is before there is anything to lose. This foundation is now **built and tested** in the `accounts/` package (see *Data layer*); it ships OFF by default and is wired in additively, so the anonymous compute flow is unchanged until accounts are deliberately enabled and deployed.
 
 ## Data inventory & classification
 
@@ -26,7 +26,11 @@ the security work splits in two:
 | Third-party vendor data (SimFin/Sharadar/Compustat) | Licensed/Confidential | Per-tier, key-gated | License-scoped; not redistributed; EOD/PIT historical preferred |
 | API keys (Anthropic, Nasdaq, SimFin) | **Secret** | `.env` (gitignored), prod secrets manager | Never in code/logs/VCS; rotated; scanned for in CI |
 | Session cookie (`af_session`) | Low (opaque id) | Browser cookie | HttpOnly, SameSite=Lax, Secure in prod; no PII inside |
-| **Customer accounts / PII / payment data** | **Critical** | **does not exist yet** | Built secure-by-default when introduced (see roadmap) |
+| Account email | PII | `accounts` SQLite store (when enabled) | **Encrypted at rest** (Fernet) + blind-indexed for lookup; never logged |
+| Strategy params / run history | Confidential (user IP) | `accounts` store (when enabled) | **Encrypted at rest**; workspace-scoped; never leaves the tenant |
+| API keys | **Secret** | `accounts` store (when enabled) | Only a SHA-256 hash + display prefix stored; secret shown once |
+| Passwords | — | **never stored** | Delegated to a managed IdP (OIDC); we never see a password |
+| Payment / card data | **Critical** | **never stored** | Stripe-hosted; we keep only a Stripe customer-id reference |
 
 **Principle: data minimization.** The most secure record is the one we never collect. We will
 collect the minimum to operate, and payment data will be handled so it never touches our servers.
@@ -58,9 +62,39 @@ These map to real code: input validation in `api/service.py`, HTTP hardening in
 - **Detection:** CI gitleaks fails the build on any committed secret; if one ever lands, treat it
   as compromised, rotate, and purge from history.
 
-## Data-protection roadmap (before accounts / billing / PII ship)
+## Data layer (built foundation — `accounts/`, 2026-06-16)
 
-These are non-negotiable preconditions for storing any customer data:
+The secure-by-default data layer is implemented and unit-tested (`tests/test_accounts.py`)
+ahead of holding any real customer record. It is OFF by default and additive (the public
+compute API is untouched unless `ALPHAFORGE_ACCOUNTS`/`ALPHAFORGE_DB_PATH` is set). What it
+enforces in code today:
+
+- **No homegrown passwords.** Identity is delegated to a managed IdP via an OIDC seam
+  (`AccountService.login_with_identity` takes already-verified claims). Request-time auth
+  uses **API keys** — high-entropy bearer secrets stored only as a SHA-256 hash + prefix,
+  verified in constant time, shown once. (A dev-login mints a key locally; it is disabled
+  in production, where the OIDC login is required.)
+- **Per-workspace authorization, deny-by-default** (`accounts/authz.py`): every scoped
+  operation re-checks membership for the *target* workspace at a minimum role — the
+  BOLA/BFLA defense. The store also filters every read by `workspace_id` (defense in depth).
+- **Encryption at rest** (`accounts/crypto.py`): email and the user's strategy params/results
+  are Fernet-encrypted before they hit disk; emails are blind-indexed (keyed HMAC) so lookup
+  works without storing plaintext. One master key (`ALPHAFORGE_DATA_KEY`) derives both subkeys
+  via HKDF and is **required in production** (fail closed).
+- **Payments stay out of scope:** only a Stripe customer-id reference is ever stored.
+- **Tamper-evident audit log** (`accounts/audit.py` + store): an append-only, per-workspace
+  hash chain of auth/key/run/erasure events — `verify()` detects any silent edit, the same
+  honesty discipline as the engine's trial ledger.
+- **GDPR / LGPD rights:** full per-workspace **export** and **erasure** (cascade delete + a
+  system-chain tombstone proving erasure occurred without retaining the erased data).
+
+What remains before turning this on for real customers is **deployment/operations**, not
+application design — see the roadmap below.
+
+## Data-protection roadmap (operational preconditions before accounts go live)
+
+The application foundation above is built; these are the deployment/ops preconditions that
+remain before storing real customer data:
 
 1. **Authentication — never roll our own.** Use a managed identity provider (Clerk/Auth0):
    no homegrown password storage; passwords (if any) are the provider's problem, hashed with a

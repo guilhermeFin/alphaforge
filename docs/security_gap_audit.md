@@ -43,15 +43,33 @@ All verified by `tests/test_security.py` (now covers headers, request-id, unknow
   surfaced weekly — because hard-failing on every unactionable transitive CVE is noise, not security.
   Making it blocking against a clean CI baseline is a P1 follow-up.
 
-## Deferred to the accounts/infrastructure roadmap (do NOT pull forward)
+## Data layer built secure-by-default (follow-up, 2026-06-16)
 
-Already captured in `SECURITY.md` and correctly out of scope for a pre-accounts MVP: managed
-identity (Clerk/Auth0) + MFA + signed sessions; per-workspace authorization (BOLA/BFLA defenses);
-encryption at rest + field-level encryption; Stripe so card data never touches our servers; scoped
-IAM + secrets manager + network segmentation; centralized logging + anomaly alerting + on-call;
-encrypted, restore-tested backups (RTO/RPO); periodic third-party penetration test; SOC 2 Type II
-evidence program. Edge controls (WAF, CDN/gateway + distributed rate limiting, DAST vs. staging)
-belong at infra/scale, not in-app.
+The application-layer half of the deferred list has since been **built and tested** in the
+`accounts/` package (OFF by default, additive — the public compute API is unchanged). This
+pulls the following from "deferred" to "implemented foundation", verified by
+`tests/test_accounts.py`:
+
+| Control | Implementation | Framework |
+|---|---|---|
+| No homegrown passwords; managed-IdP (OIDC) seam + API-key auth | `accounts/identity.py`, `service.login_with_identity`; keys stored as SHA-256 hash + prefix, constant-time verify | OWASP API2; NIST PR.AA |
+| Per-workspace authorization, deny-by-default | `accounts/authz.require_workspace` (re-checks membership for the target workspace) + store-level `workspace_id` filtering | OWASP API1/API5 (BOLA/BFLA) |
+| Encryption at rest + field-level encryption | `accounts/crypto.py` (Fernet via one HKDF-derived master key) for email + run params/results; keyed blind index for lookup | NIST PR.DS-01 |
+| Payments minimize PCI scope | only a Stripe customer-id reference is stored; no PAN ever | PCI-DSS scope reduction |
+| Append-only, tamper-evident audit log | per-workspace SHA-256 hash chain + `verify()` (`accounts/audit.py`, store) | NIST PR.PS / DE.CM; AU-9 |
+| PII export + erasure (GDPR / LGPD) | `service.export_account` / `delete_account` (cascade + system-chain tombstone) | GDPR Art. 15/17; LGPD |
+
+What still remains deferred is **deployment/operations, not application design** — see below.
+
+## Deferred to the infrastructure/operations roadmap (do NOT pull forward)
+
+Still correctly out of scope until accounts deploy: a real **managed IdP** (Clerk/Auth0) wired
+to the OIDC seam + **MFA** + signed sessions; a hosted DB with **disk encryption** and a real
+**KMS/secrets manager** holding `ALPHAFORGE_DATA_KEY` (the app does field encryption; the
+platform must protect the key and the volume); scoped IAM + network segmentation; centralized
+logging + anomaly alerting + on-call; encrypted, restore-tested backups (RTO/RPO); periodic
+third-party penetration test; SOC 2 Type II evidence program. Edge controls (WAF, CDN/gateway +
+distributed rate limiting, DAST vs. staging) belong at infra/scale, not in-app.
 
 ## The honest bottom line
 

@@ -447,6 +447,18 @@ def run_backtest_workflow(req: dict, ledger: "TrialLedger | None" = None) -> dic
 ML_FEATURE_FACTORS = ("gross_profitability", "roe", "operating_margin",
                       "book_to_price", "asset_growth", "momentum_12_1")
 
+# The full allow-list of factor_lib builders selectable as ML features in the UI/API.
+# Every name here must resolve in research.factor_lib (verified by the test suite).
+# Restricting to an allow-list means a user can compose the feature panel from the
+# factor library without being able to inject an arbitrary attribute name.
+ML_FEATURE_CHOICES = (
+    "gross_profitability", "operating_profitability", "roe", "roa", "operating_margin",
+    "book_to_price", "earnings_yield", "fcf_yield",
+    "asset_growth", "net_equity_issuance", "sloan_accruals", "leverage",
+    "momentum_12_1", "trailing_volatility",
+)
+MAX_ML_FEATURES = 12  # bound the feature panel (compute + overfitting discipline)
+
 
 def run_model_comparison(req: dict, factor_names: tuple | None = None,
                          model_names=None, n_splits: int = 6, horizon: int = 21) -> dict:
@@ -464,9 +476,32 @@ def run_model_comparison(req: dict, factor_names: tuple | None = None,
             "for the feature panel aren't wired for free data yet")
     try:
         from research.model_eval import build_feature_panel, compare_ladder
+        from research.models import MODEL_NAMES
     except ImportError:
         raise WorkflowError("ML extras not installed — run `pip install alphaforge[ml]` "
                             "(scikit-learn, xgboost, lightgbm)")
+
+    # Validate user-chosen features/models against allow-lists (reject unknowns up
+    # front with a clear message rather than failing deep in the model code).
+    if factor_names is not None:
+        feats_req = [str(f).strip() for f in factor_names if str(f).strip()]
+        bad = [f for f in feats_req if f not in ML_FEATURE_CHOICES]
+        if bad:
+            raise WorkflowError(f"unknown ML feature(s) {bad}; choose from {ML_FEATURE_CHOICES}")
+        if not (1 <= len(feats_req) <= MAX_ML_FEATURES):
+            raise WorkflowError(f"choose between 1 and {MAX_ML_FEATURES} ML features")
+        factor_names = tuple(feats_req)
+    if model_names is not None:
+        models_req = [str(m).strip() for m in model_names if str(m).strip()]
+        bad = [m for m in models_req if m not in MODEL_NAMES]
+        if bad:
+            raise WorkflowError(f"unknown model(s) {bad}; choose from {tuple(MODEL_NAMES)}")
+        # the baseline must be present — the whole verdict is measured against it
+        if "elastic_net" not in models_req:
+            models_req = ["elastic_net"] + models_req
+        model_names = models_req
+    if not (1 <= int(horizon) <= 63):
+        raise WorkflowError("horizon must be in [1, 63] trading days")
 
     syms = p["symbols"] or [f"S{i:02d}" for i in range(20)]
     world = data.make_synthetic_world(syms, start=p["start"], periods=p["periods"],

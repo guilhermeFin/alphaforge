@@ -544,6 +544,28 @@ def compare_ladder(
 
     leaderboard = sorted(rows, key=_ic, reverse=True)
 
+    # Descriptive feature weights: fit the linear baseline on ALL the data ONCE and
+    # read its coefficients, so the UI can show which factors the simple model leans
+    # on. This is IN-SAMPLE by construction (one fit on the whole panel), so it is a
+    # DESCRIPTIVE readout — "what did the linear model weight" — never an out-of-sample
+    # performance claim. The features are already cross-sectionally z-scored, so the
+    # coefficients are on a comparable scale. Wrapped so it can never fail the run.
+    feature_importance: list[dict] = []
+    try:
+        cols = list(X.columns)
+        base_est = make_model(baseline)
+        with warnings.catch_warnings():
+            warnings.filterwarnings("ignore", message=".*valid feature names.*")
+            base_est.fit(X.to_numpy(dtype=float), y.to_numpy(dtype=float))
+        coefs = getattr(base_est, "coef_", None)
+        if coefs is not None:
+            feature_importance = sorted(
+                ({"feature": c, "coef": round(float(w), 5), "abs_coef": round(abs(float(w)), 5)}
+                 for c, w in zip(cols, np.ravel(coefs))),
+                key=lambda d: d["abs_coef"], reverse=True)
+    except Exception:  # noqa: BLE001 — importance is a read-out, never break the ladder
+        feature_importance = []
+
     by_name = {r["model"]: r for r in rows}
     baseline_ic = _ic(by_name[baseline]) if baseline in by_name else float("nan")
 
@@ -594,4 +616,8 @@ def compare_ladder(
         "complexity_beats_linear": beats,
         "n_splits": n_splits,
         "verdict": verdict,
+        "feature_importance": feature_importance,
+        "feature_importance_note": (
+            f"{baseline} coefficients from a single full-sample fit — descriptive "
+            "(which factors the linear model weights), not an out-of-sample claim."),
     }

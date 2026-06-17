@@ -22,9 +22,16 @@ import pandas as pd
 import plotly.graph_objects as go
 import streamlit as st
 
-from api.service import (DISCLAIMER, FACTOR_CATALOG, WorkflowError,
+from api.service import (DISCLAIMER, FACTOR_CATALOG, ML_FEATURE_CHOICES,
+                         ML_FEATURE_FACTORS, WorkflowError,
                          run_backtest_workflow, run_model_comparison)
 from research.trial_ledger import TrialLedger
+
+# The model ladder, in increasing complexity. Mirrors research.models.MODEL_NAMES,
+# hardcoded here so launching the UI never requires the ML extras (sklearn/xgboost/
+# lightgbm) to be installed — they're only needed when a comparison is actually run.
+ML_MODEL_CHOICES = ("lasso", "elastic_net", "random_forest", "xgboost",
+                    "lightgbm", "mlp", "stacking")
 
 API_URL = os.environ.get("ALPHAFORGE_API", "http://127.0.0.1:8000")
 
@@ -87,14 +94,21 @@ def run_request(payload: dict) -> dict:
 
 
 def run_ml_request(payload: dict) -> dict:
-    """Opt-in ML model comparison — slow (~1-2 min). Same API/in-process split as run_request."""
+    """Opt-in ML model comparison — slow (~1-2 min). Same API/in-process split as run_request.
+
+    ``payload`` may carry ml_factors / ml_models / horizon (the feature panel + ladder
+    selection). In API mode they ride the JSON body; in-process we pull them out and
+    pass them as keyword args so both paths honor the selection identically."""
     if st.session_state.get("api_mode"):
         r = httpx.post(f"{API_URL}/ml-compare", json=payload, timeout=600.0,
                        cookies=st.session_state.get("af_cookies", {}))
         if r.status_code != 200:
             raise WorkflowError(r.json().get("detail", f"API error {r.status_code}"))
         return r.json()
-    return run_model_comparison(payload)
+    body = {k: v for k, v in payload.items() if k not in ("ml_factors", "ml_models", "horizon")}
+    return run_model_comparison(body, factor_names=payload.get("ml_factors"),
+                                model_names=payload.get("ml_models"),
+                                horizon=int(payload.get("horizon", 21)))
 
 
 if "ledger" not in st.session_state:
@@ -418,16 +432,37 @@ with t_ml:
         st.info("ML comparison needs the **synthetic** provider — it builds a point-in-time "
                 "feature panel from fundamentals, which free data can't supply yet.")
     else:
-        st.warning("⏳ Runs the full leak-aware ladder — expect **~1–2 minutes**. "
-                   "It does not consume a trial.")
-        if st.button("Run model comparison", type="primary"):
+        # --- build the feature panel + ladder from the factor library --------
+        mc1, mc2 = st.columns(2)
+        with mc1:
+            sel_factors = st.multiselect(
+                "Features (from the factor library)", list(ML_FEATURE_CHOICES),
+                default=list(ML_FEATURE_FACTORS),
+                help="The cross-sectional signals fed to every model as inputs. "
+                     "Each is z-scored per day and lagged point-in-time — no look-ahead.")
+        with mc2:
+            sel_models = st.multiselect(
+                "Models in the ladder", list(ML_MODEL_CHOICES), default=list(ML_MODEL_CHOICES),
+                help="ElasticNet is always the baseline the rest are judged against — "
+                     "it's added automatically if you leave it out.")
+        horizon = st.slider("Forward-return horizon (days)", 5, 63, 21, step=1,
+                            help="The label each model predicts: the cross-sectional return "
+                                 "over the next N trading days.")
+        st.warning("⏳ Runs the leak-aware ladder — roughly **~1–2 minutes** for the full set "
+                   "(fewer models = faster). It does not consume a trial.")
+        _disabled = len(sel_factors) == 0 or len(sel_models) == 0
+        if st.button("Run model comparison", type="primary", disabled=_disabled):
+            ml_payload = {**_lp, "ml_factors": sel_factors, "ml_models": sel_models,
+                          "horizon": int(horizon)}
             try:
-                with st.spinner("Fitting the model ladder under purged CV… (~1–2 min)"):
-                    st.session_state["ml_result"] = run_ml_request(_lp)
+                with st.spinner("Fitting the model ladder under purged CV…"):
+                    st.session_state["ml_result"] = run_ml_request(ml_payload)
             except WorkflowError as e:
                 st.error(f"ML comparison problem: {e}")
             except Exception as e:
                 st.error(f"ML comparison failed: {e}")
+        if _disabled:
+            st.caption("Pick at least one feature and one model to run.")
     mlr = st.session_state.get("ml_result")
     if mlr and "leaderboard" in mlr:
         _beats = mlr.get("complexity_beats_linear")
@@ -442,6 +477,18 @@ with t_ml:
                    f"{len(mlr.get('factors_used', []))} features · "
                    f"purged {mlr.get('n_splits', '?')}-fold CV · {mlr.get('horizon', '?')}-day "
                    "forward-return labels. OOS = out-of-sample (the model never saw it).")
+
+        # --- which factors did the linear baseline actually lean on? ----------
+        fi = mlr.get("feature_importance") or []
+        if fi:
+            st.markdown("**What the linear baseline weights** (descriptive, not OOS)")
+            fidf = pd.DataFrame(fi).sort_values("coef")
+            figi = go.Figure(go.Bar(x=fidf["coef"], y=fidf["feature"], orientation="h"))
+            figi.update_layout(height=max(220, 34 * len(fidf)),
+                               margin=dict(l=10, r=10, t=10, b=10),
+                               xaxis_title="ElasticNet coefficient (z-scored features)")
+            st.plotly_chart(figi, use_container_width=True)
+            st.caption(mlr.get("feature_importance_note", ""))
 
 with t_details:
     st.caption("Every raw scorecard value, for the detail-oriented.")

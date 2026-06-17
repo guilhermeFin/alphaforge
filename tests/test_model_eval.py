@@ -296,6 +296,21 @@ def _build_wide_panel(periods=1512, n_symbols=25, horizon=21):
     return X, y, meta
 
 
+def test_compare_ladder_reports_feature_importance():
+    """compare_ladder exposes the baseline's full-sample coefficients (a DESCRIPTIVE
+    read-out for the UI) — one entry per feature, sorted by |coef| descending, plus an
+    honesty note that it is in-sample, not an OOS performance claim."""
+    _, _, X, y, meta = _build_panel()
+    res = me.compare_ladder(X, y, meta["label_start"], meta["label_end"],
+                            model_names=["elastic_net", "random_forest"], n_splits=5)
+    fi = res["feature_importance"]
+    assert isinstance(fi, list) and len(fi) == X.shape[1]
+    assert {d["feature"] for d in fi} == set(X.columns)
+    abscoefs = [d["abs_coef"] for d in fi]
+    assert abscoefs == sorted(abscoefs, reverse=True)  # sorted by importance
+    assert "not an out-of-sample claim" in res["feature_importance_note"]
+
+
 def test_compare_ladder_complexity_does_not_beat_linear_on_synthetic():
     """The brand claim, asserted on the STABLE demo-scale world: the planted edge is
     ~linear in quality, so the boosted/tree/net/stack models do NOT meaningfully beat
