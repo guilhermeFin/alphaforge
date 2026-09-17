@@ -46,8 +46,15 @@ def fred_vintages_to_observations(payload: dict, series_id: str) -> pd.DataFrame
     ``realtime_start`` is when that vintage became available.  Missing FRED values
     are denoted by ``."`` and are omitted rather than converted to zero.
     """
+    items = payload.get("observations", [])
+    required = {"date", "realtime_start", "value"}
+    if any(not required.issubset(item) for item in items):
+        raise ValueError(
+            "FRED returned an unexpected observation shape; expected output_type=1 "
+            "records with date, realtime_start, and value."
+        )
     rows = []
-    for item in payload.get("observations", []):
+    for item in items:
         available = item.get("realtime_start")
         observation = item.get("date")
         value = pd.to_numeric(item.get("value"), errors="coerce")

@@ -330,20 +330,41 @@ def run_public_data_pilot(
     macro = macro_provider or FredAlfredProvider()
     sec_obs = sec.fundamentals(symbols)
     sec_summary = []
+    warnings = []
     for symbol in symbols:
         rows = sec_obs[sec_obs["symbol"] == symbol]
+        first_available = pd.Timestamp(rows["available_date"].min()) if not rows.empty else None
+        latest_available = pd.Timestamp(rows["available_date"].max()) if not rows.empty else None
+        if rows.empty:
+            warnings.append(
+                f"{symbol}: SEC returned no supported 10-K/10-Q company facts. "
+                "Do not use this ticker in a fundamental experiment until its coverage is resolved."
+            )
+        elif first_available > macro_start:
+            warnings.append(
+                f"{symbol}: SEC coverage begins on {first_available.date()}, after the requested "
+                f"history start of {macro_start.date()}. Treat earlier history as unavailable."
+            )
         sec_summary.append({
             "symbol": symbol,
             "observations": int(len(rows)),
             "metrics": int(rows["metric"].nunique()) if not rows.empty else 0,
-            "first_available": rows["available_date"].min() if not rows.empty else None,
-            "latest_available": rows["available_date"].max() if not rows.empty else None,
+            "first_available": first_available,
+            "latest_available": latest_available,
         })
 
     macro_summary = []
     for series_id in macro_series:
         observations = macro.observations(series_id, start=str(macro_start.date()), end=str(as_of.date()))
+        if observations.empty:
+            raise WorkflowError(
+                f"{series_id}: FRED returned no point-in-time observations for the requested date range."
+            )
         latest = _latest_known_macro(observations, as_of)
+        if latest is None:
+            raise WorkflowError(
+                f"{series_id}: FRED returned no value known by the requested as-of date of {as_of.date()}."
+            )
         macro_summary.append({
             "series_id": series_id,
             "vintages": int(len(observations)),
@@ -388,6 +409,7 @@ def run_public_data_pilot(
         "as_of": as_of,
         "sec": sec_summary,
         "macro": macro_summary,
+        "warnings": warnings,
         "text_feature": text_result,
         "note": "Pilot only: provenance and availability validation, not a trading result.",
     })

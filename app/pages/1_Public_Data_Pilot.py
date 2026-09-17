@@ -78,6 +78,8 @@ if run:
 result = st.session_state.get("public_data_pilot")
 if result:
     st.success(result["note"])
+    for warning in result.get("warnings", []):
+        st.warning(warning)
     sec, macro = pd.DataFrame(result["sec"]), pd.DataFrame(result["macro"])
     left, middle, right = st.columns(3)
     left.metric("SEC tickers checked", len(result["symbols"]))

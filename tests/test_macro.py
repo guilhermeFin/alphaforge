@@ -29,6 +29,13 @@ def test_alfred_vintage_is_not_visible_before_its_release_date():
     assert panel.loc["2024-03-15", "CPI"] == 3.4
 
 
+def test_fred_observation_parser_rejects_an_unexpected_response_shape():
+    with pytest.raises(ValueError, match="unexpected observation shape"):
+        fred_vintages_to_observations(
+            {"observations": [{"date": "2024-01-01", "CPIAUCSL_20240201": "3.0"}]}, "CPI"
+        )
+
+
 def test_fred_provider_requests_all_vintages_and_needs_a_key(monkeypatch):
     captured = []
 

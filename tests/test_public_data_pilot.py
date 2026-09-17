@@ -84,6 +84,7 @@ def test_public_data_pilot_summarizes_point_in_time_sources_without_backtest():
     assert out["sec"][0]["metrics"] == 2
     assert out["macro"][0]["latest_value"] == 316.0
     assert out["macro"][0]["available_date"] == "2024-05-10T00:00:00"
+    assert "AAPL: SEC coverage begins" in out["warnings"][0]
     assert out["text_feature"]["sentiment"] == 0.5
     assert "not a trading result" in out["note"]
 
@@ -93,6 +94,17 @@ def test_public_data_pilot_rejects_unbounded_input_before_networking():
         service.run_public_data_pilot({**_request(), "symbols": ["A", "B", "C", "D", "E", "F"]})
     with pytest.raises(service.WorkflowError, match="macro start"):
         service.run_public_data_pilot({**_request(), "macro_start": "2024-07-01"})
+
+
+def test_public_data_pilot_rejects_empty_macro_history():
+    class EmptyMacroProvider:
+        def observations(self, *_args, **_kwargs):
+            return pd.DataFrame(columns=["series_id", "observation_date", "available_date", "vintage_end", "value"])
+
+    with pytest.raises(service.WorkflowError, match="no point-in-time observations"):
+        service.run_public_data_pilot(
+            _request(), sec_provider=FakeSecProvider(), macro_provider=EmptyMacroProvider()
+        )
 
 
 def test_public_data_pilot_api_rejects_unknown_fields():
