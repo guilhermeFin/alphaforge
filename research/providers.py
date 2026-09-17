@@ -114,6 +114,11 @@ SEC_REGULAR_FORMS = {"10-K", "10-Q", "20-F", "40-F"}
 SEC_TICKERS_URL = "https://www.sec.gov/files/company_tickers.json"
 SEC_COMPANY_FACTS_URL = "https://data.sec.gov/api/xbrl/companyfacts/CIK{cik:010d}.json"
 
+# The SEC current-ticker directory maps XOM to a 2026 successor filing entity.
+# Its predecessor CIK holds the public company-facts history before that change.
+# Keep both sources so the canonical XOM panel does not silently begin in 2026.
+SEC_TICKER_PREDECESSOR_CIKS: dict[str, tuple[int, ...]] = {"XOM": (34_088,)}
+
 
 # --------------------------------------------------------------------------
 # Vendor column maps: {canonical_metric -> vendor_column_name}.
@@ -428,11 +433,16 @@ class SecEdgarProvider:
         tickers = sec_ticker_map(self._get(SEC_TICKERS_URL))
         frames = []
         for symbol in symbols:
-            cik = tickers.get(symbol.upper())
-            if cik is None:
+            normalized_symbol = symbol.upper()
+            ciks = list(SEC_TICKER_PREDECESSOR_CIKS.get(normalized_symbol, ()))
+            current_cik = tickers.get(normalized_symbol)
+            if current_cik is not None:
+                ciks.append(current_cik)
+            if not ciks:
                 continue
-            facts = self._get(SEC_COMPANY_FACTS_URL.format(cik=cik))
-            frames.append(sec_company_facts_to_obs(facts, symbol))
+            for cik in dict.fromkeys(ciks):
+                facts = self._get(SEC_COMPANY_FACTS_URL.format(cik=cik))
+                frames.append(sec_company_facts_to_obs(facts, normalized_symbol))
         if not frames:
             return pd.DataFrame(columns=OBS_COLUMNS)
         obs = pd.concat(frames, ignore_index=True)

@@ -162,3 +162,27 @@ def test_sec_provider_uses_declared_agent_and_mocked_endpoints():
     assert list(obs["metric"]) == ["total_assets"]
     assert len(calls) == 2
     assert calls[0][1]["User-Agent"] == "AlphaForge test@alphaforge.local"
+
+
+def test_sec_provider_keeps_xom_predecessor_filing_history():
+    def facts(value, filed):
+        return {"facts": {"us-gaap": {"Assets": {"units": {"USD": [
+            {"end": "2026-03-31", "filed": filed, "form": "10-Q", "val": value}
+        ]}}}}}
+
+    calls = []
+
+    def fetch(url, _headers):
+        calls.append(url)
+        if "company_tickers" in url:
+            return {"0": {"ticker": "XOM", "cik_str": 2115436}}
+        if "CIK0000034088" in url:
+            return facts(100.0, "2026-05-04")
+        return facts(110.0, "2026-08-03")
+
+    obs = P.SecEdgarProvider(
+        user_agent="AlphaForge test@alphaforge.local", fetch_json=fetch, request_interval=0
+    ).fundamentals(["XOM"])
+    assert set(obs["symbol"]) == {"XOM"}
+    assert list(obs["value"]) == [100.0, 110.0]
+    assert len(calls) == 3
