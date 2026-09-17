@@ -8,22 +8,34 @@ before it was available.
 """
 from __future__ import annotations
 
-import json
 import os
 from typing import Callable
+from urllib.error import HTTPError
 from urllib.parse import urlencode
 from urllib.request import urlopen
 
 import numpy as np
 import pandas as pd
 
+from .http import decode_json_bytes
+
 MACRO_COLUMNS = ["series_id", "observation_date", "available_date", "vintage_end", "value"]
 FRED_OBSERVATIONS_URL = "https://api.stlouisfed.org/fred/series/observations"
+FRED_VINTAGE_PAGE_SIZE = 2_000
 
 
 def _fetch_json(url: str) -> dict:
-    with urlopen(url, timeout=30) as response:  # nosec B310 - fixed HTTPS endpoint
-        return json.load(response)
+    try:
+        with urlopen(url, timeout=30) as response:  # nosec B310 - fixed HTTPS endpoint
+            return decode_json_bytes(response.read(), response.headers.get("Content-Encoding"))
+    except HTTPError as error:
+        body = error.read().decode("utf-8", errors="replace").lower()
+        if error.code == 400 and "api_key" in body and "not registered" in body:
+            raise RuntimeError(
+                "FRED rejected FRED_API_KEY as unregistered. Replace FRED_API_KEY in .env "
+                "with an active key from https://fred.stlouisfed.org/docs/api/api_key.html."
+            ) from error
+        raise
 
 
 def fred_vintages_to_observations(payload: dict, series_id: str) -> pd.DataFrame:
@@ -125,11 +137,23 @@ class FredAlfredProvider:
             "output_type": 2,  # observations by vintage date, all observations
             "realtime_start": "1776-07-04",
             "realtime_end": "9999-12-31",
-            "limit": 100000,
+            # FRED caps output_type=2 JSON responses at 2,000 rows.  Fetching a
+            # full vintage history is therefore a paginated operation.
+            "limit": FRED_VINTAGE_PAGE_SIZE,
         }
         if start is not None:
             params["observation_start"] = start
         if end is not None:
             params["observation_end"] = end
-        payload = self._fetch_json(f"{FRED_OBSERVATIONS_URL}?{urlencode(params)}")
-        return fred_vintages_to_observations(payload, series_id)
+        rows: list[dict] = []
+        offset = 0
+        while True:
+            page_params = {**params, "offset": offset}
+            payload = self._fetch_json(f"{FRED_OBSERVATIONS_URL}?{urlencode(page_params)}")
+            page_rows = payload.get("observations", [])
+            rows.extend(page_rows)
+            total = int(payload.get("count", len(page_rows)))
+            if not page_rows or offset + len(page_rows) >= total:
+                break
+            offset += len(page_rows)
+        return fred_vintages_to_observations({"observations": rows}, series_id)

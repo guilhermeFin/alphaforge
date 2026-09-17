@@ -1,7 +1,9 @@
 import pandas as pd
 import pytest
+from io import BytesIO
+from urllib.error import HTTPError
 
-from research.macro import FredAlfredProvider, fred_vintages_to_observations, macro_asof_panel
+from research.macro import FredAlfredProvider, _fetch_json, fred_vintages_to_observations, macro_asof_panel
 
 
 def _payload():
@@ -38,7 +40,44 @@ def test_fred_provider_requests_all_vintages_and_needs_a_key(monkeypatch):
     assert not out.empty
     assert "output_type=2" in captured[0]
     assert "realtime_start=1776-07-04" in captured[0]
+    assert "limit=2000" in captured[0]
 
     monkeypatch.delenv("FRED_API_KEY", raising=False)
     with pytest.raises(RuntimeError, match="FRED_API_KEY"):
         FredAlfredProvider().observations("CPIAUCSL")
+
+
+def test_fred_provider_pages_long_vintage_histories():
+    captured = []
+
+    def fetch(url):
+        captured.append(url)
+        if "offset=0" in url:
+            return {
+                "count": 2,
+                "observations": [{"date": "2024-01-01", "realtime_start": "2024-02-01", "value": "1.0"}],
+            }
+        return {
+            "count": 2,
+            "observations": [{"date": "2024-02-01", "realtime_start": "2024-03-01", "value": "2.0"}],
+        }
+
+    out = FredAlfredProvider(api_key="test-key", fetch_json=fetch).observations("TEST")
+    assert len(captured) == 2
+    assert "offset=0" in captured[0] and "offset=1" in captured[1]
+    assert list(out["value"]) == [1.0, 2.0]
+
+
+def test_fred_fetch_explains_an_unregistered_api_key(monkeypatch):
+    def fail(*_args, **_kwargs):
+        raise HTTPError(
+            "https://api.stlouisfed.org/fred/series/observations",
+            400,
+            "Bad Request",
+            None,
+            BytesIO(b'{"error_message":"The value for variable api_key is not registered."}'),
+        )
+
+    monkeypatch.setattr("research.macro.urlopen", fail)
+    with pytest.raises(RuntimeError, match="FRED rejected FRED_API_KEY"):
+        _fetch_json("https://api.stlouisfed.org/fred/series/observations")

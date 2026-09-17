@@ -38,13 +38,14 @@ swapping SimFin for Sharadar for Compustat never touches the factor math.
 from __future__ import annotations
 
 import os
-import json
 import time
 from typing import Callable, Protocol, runtime_checkable
 from urllib.request import Request, urlopen
 
 import numpy as np
 import pandas as pd
+
+from .http import decode_json_bytes
 
 # --------------------------------------------------------------------------
 # Canonical, vendor-agnostic raw fields. Factor formulas (Piotroski, Altman,
@@ -255,7 +256,7 @@ def _require_key(env_var: str, vendor: str, signup: str) -> str:
 def _sec_fetch_json(url: str, headers: dict[str, str]) -> dict:
     request = Request(url, headers=headers)
     with urlopen(request, timeout=30) as response:  # nosec B310 - fixed SEC HTTPS endpoints
-        return json.load(response)
+        return decode_json_bytes(response.read(), response.headers.get("Content-Encoding"))
 
 
 def sec_ticker_map(payload: dict) -> dict[str, int]:
