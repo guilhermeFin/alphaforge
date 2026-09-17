@@ -38,7 +38,10 @@ swapping SimFin for Sharadar for Compustat never touches the factor math.
 from __future__ import annotations
 
 import os
-from typing import Protocol, runtime_checkable
+import json
+import time
+from typing import Callable, Protocol, runtime_checkable
+from urllib.request import Request, urlopen
 
 import numpy as np
 import pandas as pd
@@ -77,6 +80,38 @@ CANONICAL_FIELDS: dict[str, str] = {
     "capex": "CAPX",
 }
 OBS_COLUMNS = ["symbol", "period_end", "available_date", "metric", "value"]
+
+# SEC company-facts tag aliases.  A reporting taxonomy can change over time, so
+# each canonical field may have multiple standard US-GAAP names.  We use the first
+# available tag and retain its filing date rather than backdating it to period end.
+SEC_XBRL_TAGS: dict[str, tuple[str, ...]] = {
+    "revenue": ("RevenueFromContractWithCustomerExcludingAssessedTax", "SalesRevenueNet", "Revenues"),
+    "cogs": ("CostOfRevenue", "CostOfGoodsAndServicesSold"),
+    "gross_profit": ("GrossProfit",),
+    "sga": ("SellingGeneralAndAdministrativeExpense",),
+    "rnd": ("ResearchAndDevelopmentExpense",),
+    "ebit": ("OperatingIncomeLoss",),
+    "interest_expense": ("InterestExpenseNonoperating", "InterestExpense"),
+    "net_income": ("NetIncomeLoss",),
+    "shares_diluted": ("WeightedAverageNumberOfDilutedSharesOutstanding",),
+    "total_assets": ("Assets",),
+    "current_assets": ("AssetsCurrent",),
+    "cash": ("CashAndCashEquivalentsAtCarryingValue", "CashCashEquivalentsRestrictedCashAndRestrictedCashEquivalents"),
+    "receivables": ("AccountsReceivableNetCurrent",),
+    "inventory": ("InventoryNet",),
+    "current_liabilities": ("LiabilitiesCurrent",),
+    "accounts_payable": ("AccountsPayableCurrent",),
+    "current_debt": ("ShortTermBorrowings", "ShortTermDebt"),
+    "long_term_debt": ("LongTermDebtCurrent", "LongTermDebtNoncurrent"),
+    "total_liabilities": ("Liabilities",),
+    "common_equity": ("StockholdersEquity", "StockholdersEquityIncludingPortionAttributableToNoncontrollingInterest"),
+    "retained_earnings": ("RetainedEarningsAccumulatedDeficit",),
+    "op_cash_flow": ("NetCashProvidedByUsedInOperatingActivities",),
+    "capex": ("PaymentsToAcquirePropertyPlantAndEquipment",),
+}
+SEC_REGULAR_FORMS = {"10-K", "10-Q", "20-F", "40-F"}
+SEC_TICKERS_URL = "https://www.sec.gov/files/company_tickers.json"
+SEC_COMPANY_FACTS_URL = "https://data.sec.gov/api/xbrl/companyfacts/CIK{cik:010d}.json"
 
 
 # --------------------------------------------------------------------------
@@ -217,6 +252,57 @@ def _require_key(env_var: str, vendor: str, signup: str) -> str:
     return key
 
 
+def _sec_fetch_json(url: str, headers: dict[str, str]) -> dict:
+    request = Request(url, headers=headers)
+    with urlopen(request, timeout=30) as response:  # nosec B310 - fixed SEC HTTPS endpoints
+        return json.load(response)
+
+
+def sec_ticker_map(payload: dict) -> dict[str, int]:
+    """Normalize the SEC ticker payload to ``{TICKER: CIK}`` without network I/O."""
+    values = payload.values() if isinstance(payload, dict) else payload
+    out = {}
+    for row in values:
+        ticker, cik = row.get("ticker"), row.get("cik_str")
+        if ticker is not None and cik is not None:
+            out[str(ticker).upper()] = int(cik)
+    return out
+
+
+def sec_company_facts_to_obs(payload: dict, symbol: str) -> pd.DataFrame:
+    """Turn SEC Company Facts JSON into the canonical as-filed observation table.
+
+    ``filed`` is date-granular, so this adapter is suitable for daily strategies
+    only.  The same period can occur again in a later filing; that later value is
+    retained as a newly available revision rather than overwriting prior history.
+    """
+    facts = payload.get("facts", {}).get("us-gaap", {})
+    rows = []
+    for metric, aliases in SEC_XBRL_TAGS.items():
+        concept = next((facts[tag] for tag in aliases if tag in facts), None)
+        if concept is None:
+            continue
+        units = concept.get("units", {})
+        preferred_units = ("shares", "pure") if metric == "shares_diluted" else ("USD",)
+        items = next((units[unit] for unit in preferred_units if unit in units), [])
+        for item in items:
+            if item.get("form") not in SEC_REGULAR_FORMS:
+                continue
+            period_end, filed, value = item.get("end"), item.get("filed"), item.get("val")
+            if period_end is None or filed is None or value is None:
+                continue
+            rows.append((symbol.upper(), period_end, filed, metric, value))
+    if not rows:
+        return pd.DataFrame(columns=OBS_COLUMNS)
+    out = pd.DataFrame(rows, columns=OBS_COLUMNS)
+    out["period_end"] = pd.to_datetime(out["period_end"], errors="coerce")
+    out["available_date"] = pd.to_datetime(out["available_date"], errors="coerce")
+    out["value"] = pd.to_numeric(out["value"], errors="coerce")
+    return out.dropna(subset=["period_end", "available_date", "value"]).sort_values(
+        ["available_date", "period_end", "metric"]
+    ).reset_index(drop=True)
+
+
 class SimFinProvider:
     """SimFin budget tier. Values are LATEST-RESTATED (not true PIT); we anchor
     ``available_date`` to the Publish Date as the honest proxy and flag it.
@@ -300,6 +386,62 @@ class SharadarProvider:
             period_end_col="reportperiod", available_date_col="datekey")
 
 
+class SecEdgarProvider:
+    """Free SEC Company Facts fundamentals with filing-date availability.
+
+    It sends the declared ``SEC_USER_AGENT`` on every request and spaces requests
+    below the SEC's published ten-requests-per-second limit.  The SEC field is a
+    public filing date, not an intraday dissemination timestamp.
+    """
+
+    name = "sec_edgar"
+    is_point_in_time = True
+
+    def __init__(
+        self,
+        user_agent: str | None = None,
+        fetch_json: Callable[[str, dict[str, str]], dict] | None = None,
+        request_interval: float = 0.12,
+    ):
+        self.user_agent = user_agent
+        self._fetch_json = fetch_json or _sec_fetch_json
+        self.request_interval = request_interval
+        self._last_request_at: float | None = None
+
+    def _get(self, url: str) -> dict:
+        user_agent = (self.user_agent or os.environ.get("SEC_USER_AGENT", "")).strip()
+        if not user_agent or "example.com" in user_agent:
+            raise RuntimeError(
+                "SEC user agent not configured. Set $SEC_USER_AGENT to a descriptive "
+                "application name and monitored contact email in alphaforge/.env."
+            )
+        if self._last_request_at is not None:
+            remaining = self.request_interval - (time.monotonic() - self._last_request_at)
+            if remaining > 0:
+                time.sleep(remaining)
+        payload = self._fetch_json(url, {"User-Agent": user_agent, "Accept-Encoding": "gzip, deflate"})
+        self._last_request_at = time.monotonic()
+        return payload
+
+    def fundamentals(self, symbols, start=None, end=None) -> pd.DataFrame:
+        tickers = sec_ticker_map(self._get(SEC_TICKERS_URL))
+        frames = []
+        for symbol in symbols:
+            cik = tickers.get(symbol.upper())
+            if cik is None:
+                continue
+            facts = self._get(SEC_COMPANY_FACTS_URL.format(cik=cik))
+            frames.append(sec_company_facts_to_obs(facts, symbol))
+        if not frames:
+            return pd.DataFrame(columns=OBS_COLUMNS)
+        obs = pd.concat(frames, ignore_index=True)
+        if start is not None:
+            obs = obs[obs["available_date"] >= pd.Timestamp(start)]
+        if end is not None:
+            obs = obs[obs["available_date"] <= pd.Timestamp(end)]
+        return obs.sort_values("available_date").reset_index(drop=True)
+
+
 class SyntheticFundamentalProvider:
     """Free offline tier — wraps the synthetic World generator so the SAME code
     path (provider -> obs table -> build_fundamentals) is exercised without a key.
@@ -327,6 +469,7 @@ _PROVIDERS = {
     "synthetic": SyntheticFundamentalProvider,
     "simfin": SimFinProvider,
     "sharadar": SharadarProvider,
+    "sec_edgar": SecEdgarProvider,
 }
 
 

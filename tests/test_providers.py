@@ -91,6 +91,7 @@ def test_factory_and_pit_flags():
     assert isinstance(P.get_fundamental_provider("synthetic"), P.SyntheticFundamentalProvider)
     assert P.get_fundamental_provider("sharadar").is_point_in_time is True
     assert P.get_fundamental_provider("simfin").is_point_in_time is False   # restated, flagged
+    assert P.get_fundamental_provider("sec_edgar").is_point_in_time is True
     with pytest.raises(ValueError):
         P.get_fundamental_provider("bloomberg")
 
@@ -111,3 +112,53 @@ def test_synthetic_provider_emits_obs_schema():
     assert not obs.empty
     # available_date is strictly after period_end (the reporting lag) — PIT-honest
     assert (obs["available_date"] > obs["period_end"]).all()
+
+
+def test_sec_company_facts_are_available_only_from_filing_date():
+    payload = {
+        "facts": {
+            "us-gaap": {
+                "Revenues": {
+                    "units": {
+                        "USD": [
+                            {"end": "2023-03-31", "filed": "2023-05-02", "form": "10-Q", "val": 100.0},
+                            {"end": "2023-03-31", "filed": "2023-08-01", "form": "10-Q", "val": 101.0},
+                            {"end": "2023-06-30", "filed": "2023-08-01", "form": "8-K", "val": 999.0},
+                        ]
+                    }
+                },
+                "Assets": {"units": {"USD": [
+                    {"end": "2023-03-31", "filed": "2023-05-02", "form": "10-Q", "val": 500.0}
+                ]}},
+            }
+        }
+    }
+    obs = P.sec_company_facts_to_obs(payload, "abc")
+    assert set(obs["metric"]) == {"revenue", "total_assets"}
+    revenue = obs[obs["metric"] == "revenue"]
+    assert list(revenue["available_date"]) == [pd.Timestamp("2023-05-02"), pd.Timestamp("2023-08-01")]
+
+    index = pd.bdate_range("2023-04-28", "2023-05-05")
+    fund = build_fundamentals(obs, index, ["ABC"])
+    assert fund["revenue"].loc["2023-05-01", "ABC"] != fund["revenue"].loc["2023-05-01", "ABC"]
+    assert fund["revenue"].loc["2023-05-02", "ABC"] == 100.0
+
+
+def test_sec_provider_uses_declared_agent_and_mocked_endpoints():
+    calls = []
+    facts = {"facts": {"us-gaap": {"Assets": {"units": {"USD": [
+        {"end": "2023-03-31", "filed": "2023-05-02", "form": "10-Q", "val": 500.0}
+    ]}}}}}
+
+    def fetch(url, headers):
+        calls.append((url, headers))
+        if "company_tickers" in url:
+            return {"0": {"ticker": "ABC", "cik_str": 1234}}
+        return facts
+
+    obs = P.SecEdgarProvider(
+        user_agent="AlphaForge test@alphaforge.local", fetch_json=fetch, request_interval=0
+    ).fundamentals(["ABC"])
+    assert list(obs["metric"]) == ["total_assets"]
+    assert len(calls) == 2
+    assert calls[0][1]["User-Agent"] == "AlphaForge test@alphaforge.local"
