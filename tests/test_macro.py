@@ -38,9 +38,9 @@ def test_fred_provider_requests_all_vintages_and_needs_a_key(monkeypatch):
 
     out = FredAlfredProvider(api_key="test-key", fetch_json=fetch).observations("CPIAUCSL")
     assert not out.empty
-    assert "output_type=2" in captured[0]
+    assert "output_type=1" in captured[0]
     assert "realtime_start=1776-07-04" in captured[0]
-    assert "limit=2000" in captured[0]
+    assert "limit=100000" in captured[0]
 
     monkeypatch.delenv("FRED_API_KEY", raising=False)
     with pytest.raises(RuntimeError, match="FRED_API_KEY"):
@@ -66,6 +66,28 @@ def test_fred_provider_pages_long_vintage_histories():
     assert len(captured) == 2
     assert "offset=0" in captured[0] and "offset=1" in captured[1]
     assert list(out["value"]) == [1.0, 2.0]
+
+
+def test_fred_provider_retries_large_daily_series_in_realtime_chunks():
+    captured = []
+
+    def fetch(url):
+        captured.append(url)
+        if "realtime_start=1776-07-04" in url:
+            raise HTTPError(url, 400, "Bad Request", None, BytesIO())
+        return {
+            "count": 1,
+            "observations": [
+                {"date": "2024-01-02", "realtime_start": "2024-01-03", "value": "4.0"}
+            ],
+        }
+
+    out = FredAlfredProvider(api_key="test-key", fetch_json=fetch).observations(
+        "DGS10", start="2024-01-01", end="2024-12-30"
+    )
+    assert len(captured) == 2
+    assert "realtime_start=2024-01-01" in captured[1]
+    assert list(out["value"]) == [4.0]
 
 
 def test_fred_fetch_explains_an_unregistered_api_key(monkeypatch):

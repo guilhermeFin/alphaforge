@@ -1,10 +1,11 @@
 """Point-in-time FRED/ALFRED macro observations.
 
 FRED's default response answers "what is known today" and may therefore contain
-revised historical values.  This module requests output_type=2 (all vintages) and
-keeps ``realtime_start`` as each value's availability date.  Consumers can then
-join a macro series to a trading calendar without seeing a release or revision
-before it was available.
+revised historical values. This module requests output_type=1 over the full
+real-time period; it returns one record per value revision and keeps
+``realtime_start`` as each value's availability date. Consumers can then join a
+macro series to a trading calendar without seeing a release or revision before it
+was available.
 """
 from __future__ import annotations
 
@@ -21,7 +22,8 @@ from .http import decode_json_bytes
 
 MACRO_COLUMNS = ["series_id", "observation_date", "available_date", "vintage_end", "value"]
 FRED_OBSERVATIONS_URL = "https://api.stlouisfed.org/fred/series/observations"
-FRED_VINTAGE_PAGE_SIZE = 2_000
+FRED_PAGE_SIZE = 100_000
+FRED_REALTIME_CHUNK_DAYS = 365
 
 
 def _fetch_json(url: str) -> dict:
@@ -57,9 +59,12 @@ def fred_vintages_to_observations(payload: dict, series_id: str) -> pd.DataFrame
     out = pd.DataFrame(rows, columns=MACRO_COLUMNS)
     for column in ("observation_date", "available_date", "vintage_end"):
         out[column] = pd.to_datetime(out[column], errors="coerce")
-    return out.dropna(subset=["observation_date", "available_date", "value"]).sort_values(
-        ["available_date", "observation_date"]
-    ).reset_index(drop=True)
+    return (
+        out.dropna(subset=["observation_date", "available_date", "value"])
+        .drop_duplicates()
+        .sort_values(["available_date", "observation_date"])
+        .reset_index(drop=True)
+    )
 
 
 def macro_asof_panel(
@@ -100,7 +105,7 @@ def macro_asof_panel(
 
 
 class FredAlfredProvider:
-    """Fetch all FRED/ALFRED vintages for a series using ``FRED_API_KEY``.
+    """Fetch FRED/ALFRED real-time periods for a series using ``FRED_API_KEY``.
 
     The returned table is intentionally not a backfilled current-value series.
     Pass it to :func:`macro_asof_panel` before modelling.  The public API is called
@@ -118,6 +123,48 @@ class FredAlfredProvider:
         self.api_key = api_key
         self._fetch_json = fetch_json or _fetch_json
 
+    def _fetch_pages(self, params: dict[str, object]) -> list[dict]:
+        rows: list[dict] = []
+        offset = 0
+        while True:
+            page_params = {**params, "offset": offset}
+            payload = self._fetch_json(f"{FRED_OBSERVATIONS_URL}?{urlencode(page_params)}")
+            page_rows = payload.get("observations", [])
+            rows.extend(page_rows)
+            total = int(payload.get("count", len(page_rows)))
+            if not page_rows or offset + len(page_rows) >= total:
+                return rows
+            offset += len(page_rows)
+
+    def _fetch_realtime_chunks(
+        self,
+        params: dict[str, object],
+        start: str | None,
+        end: str | None,
+    ) -> list[dict]:
+        """Fetch high-frequency series in bounded real-time windows.
+
+        FRED rejects a single all-vintages response for certain daily series. A
+        yearly real-time window preserves the same availability data while keeping
+        each response within the provider's practical response-size limits.
+        """
+        first = pd.Timestamp(start or "1776-07-04")
+        last = pd.Timestamp(end or pd.Timestamp.now().date())
+        rows: list[dict] = []
+        while first <= last:
+            window_end = min(first + pd.Timedelta(days=FRED_REALTIME_CHUNK_DAYS - 1), last)
+            rows.extend(
+                self._fetch_pages(
+                    {
+                        **params,
+                        "realtime_start": str(first.date()),
+                        "realtime_end": str(window_end.date()),
+                    }
+                )
+            )
+            first = window_end + pd.Timedelta(days=1)
+        return rows
+
     def observations(
         self,
         series_id: str,
@@ -134,26 +181,19 @@ class FredAlfredProvider:
             "series_id": series_id,
             "api_key": key,
             "file_type": "json",
-            "output_type": 2,  # observations by vintage date, all observations
+            "output_type": 1,  # observations by real-time period, including revisions
             "realtime_start": "1776-07-04",
             "realtime_end": "9999-12-31",
-            # FRED caps output_type=2 JSON responses at 2,000 rows.  Fetching a
-            # full vintage history is therefore a paginated operation.
-            "limit": FRED_VINTAGE_PAGE_SIZE,
+            "limit": FRED_PAGE_SIZE,
         }
         if start is not None:
             params["observation_start"] = start
         if end is not None:
             params["observation_end"] = end
-        rows: list[dict] = []
-        offset = 0
-        while True:
-            page_params = {**params, "offset": offset}
-            payload = self._fetch_json(f"{FRED_OBSERVATIONS_URL}?{urlencode(page_params)}")
-            page_rows = payload.get("observations", [])
-            rows.extend(page_rows)
-            total = int(payload.get("count", len(page_rows)))
-            if not page_rows or offset + len(page_rows) >= total:
-                break
-            offset += len(page_rows)
+        try:
+            rows = self._fetch_pages(params)
+        except HTTPError as error:
+            if error.code != 400:
+                raise
+            rows = self._fetch_realtime_chunks(params, start, end)
         return fred_vintages_to_observations({"observations": rows}, series_id)
