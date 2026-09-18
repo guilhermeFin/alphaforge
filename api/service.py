@@ -16,6 +16,10 @@ import numpy as np
 import pandas as pd
 
 from research import data, factors, factor_lib, fundamentals, signal_quality, stats_guards, overfitting
+from research.macro import FredAlfredProvider
+from research.providers import SecEdgarProvider
+from research.sec_documents import SUPPORTED_FORMS, SecDocumentProvider
+from research.text_features import FinBertExtractor, TextDocument
 from research.backtest import backtest
 from research.walkforward import split_backtest, walk_forward
 from research.trial_ledger import TrialLedger
@@ -257,7 +261,225 @@ def _jsonable(obj: Any) -> Any:
         return None if (np.isnan(v) or np.isinf(v)) else v
     if isinstance(obj, float):
         return None if (np.isnan(obj) or np.isinf(obj)) else obj
+    if isinstance(obj, (pd.Timestamp, pd.Timedelta)):
+        return obj.isoformat()
     return obj
+
+
+PILOT_DEFAULT_SYMBOLS = ("AAPL", "MSFT", "NVDA", "JPM", "XOM")
+PILOT_DEFAULT_MACRO_SERIES = ("CPIAUCSL", "UNRATE", "DGS10")
+PILOT_MAX_SYMBOLS = 5
+PILOT_MAX_MACRO_SERIES = 5
+PILOT_MAX_DOCUMENT_CHARS = 12_000
+DOCUMENT_BATCH_MAX_PER_SYMBOL = 2
+
+
+def _pilot_symbols(values: list[str] | None) -> list[str]:
+    symbols = [str(value).strip().upper() for value in (values or PILOT_DEFAULT_SYMBOLS) if str(value).strip()]
+    if not (1 <= len(symbols) <= PILOT_MAX_SYMBOLS):
+        raise WorkflowError(f"public-data pilot accepts 1 to {PILOT_MAX_SYMBOLS} tickers")
+    if len(set(symbols)) != len(symbols):
+        raise WorkflowError("public-data pilot tickers must be unique")
+    bad = [symbol for symbol in symbols if len(symbol) > MAX_TICKER_LEN or not symbol.replace(".", "").replace("-", "").isalnum()]
+    if bad:
+        raise WorkflowError(f"invalid ticker(s): {bad}")
+    return symbols
+
+
+def _latest_known_macro(observations: pd.DataFrame, as_of: pd.Timestamp) -> dict | None:
+    known = observations[pd.to_datetime(observations["available_date"]) <= as_of].copy()
+    if known.empty:
+        return None
+    known["observation_date"] = pd.to_datetime(known["observation_date"])
+    latest_period = known["observation_date"].max()
+    latest = known[known["observation_date"] == latest_period].sort_values("available_date")
+    row = latest.iloc[-1]
+    return {
+        "value": float(row["value"]),
+        "observation_date": pd.Timestamp(row["observation_date"]),
+        "available_date": pd.Timestamp(row["available_date"]),
+    }
+
+
+def run_real_document_batch(
+    req: dict,
+    *,
+    document_provider: Any | None = None,
+    text_extractor: Any | None = None,
+) -> dict:
+    """Classify a small, timestamped batch of real SEC filing excerpts.
+
+    This is a provenance step only. It retrieves documents filed by a declared
+    cutoff, preserves each filing date, and does not create a trading result.
+    """
+    symbols = _pilot_symbols(req.get("symbols"))
+    forms = {str(value).strip().upper() for value in req.get("forms", ["8-K"]) if str(value).strip()}
+    if not forms or not forms.issubset(SUPPORTED_FORMS):
+        raise WorkflowError(f"document batch forms must be selected from {sorted(SUPPORTED_FORMS)}")
+    try:
+        as_of = pd.Timestamp(req.get("as_of", pd.Timestamp.now().date()))
+    except Exception as error:
+        raise WorkflowError("available-through date must be a valid ISO date") from error
+    per_symbol = int(req.get("per_symbol", 1))
+    if not 1 <= per_symbol <= DOCUMENT_BATCH_MAX_PER_SYMBOL:
+        raise WorkflowError(f"document batch accepts 1 to {DOCUMENT_BATCH_MAX_PER_SYMBOL} filings per ticker")
+
+    provider = document_provider or SecDocumentProvider()
+    documents, warnings = provider.documents(symbols, forms, as_of, per_symbol)
+    if not documents:
+        raise WorkflowError("SEC returned no usable filing excerpts for the selected cutoff and forms")
+
+    extractor = text_extractor or FinBertExtractor()
+    features = []
+    for document in documents:
+        feature = extractor.extract(document.as_text_document())
+        features.append({
+            "symbol": feature.symbol,
+            "available_at": feature.available_at,
+            "form": document.form,
+            "document_id": feature.document_id,
+            "source_url": document.url,
+            "model": feature.model,
+            "sentiment": feature.sentiment,
+            "positive_probability": feature.positive_probability,
+            "negative_probability": feature.negative_probability,
+            "neutral_probability": feature.neutral_probability,
+        })
+    return _jsonable({
+        "symbols": symbols,
+        "as_of": as_of,
+        "forms": sorted(forms),
+        "filings_requested": per_symbol,
+        "features": features,
+        "warnings": warnings,
+        "note": "Real SEC filing excerpts classified with filing-date provenance; not a trading result.",
+    })
+
+
+def run_public_data_pilot(
+    req: dict,
+    *,
+    sec_provider: Any | None = None,
+    macro_provider: Any | None = None,
+    text_extractor: Any | None = None,
+) -> dict:
+    """Run a small, fixed-scope data-provenance check.
+
+    This intentionally does not build a signal, optimize parameters, or submit a
+    backtest.  It proves that SEC filing dates, ALFRED vintages, and optional text
+    classifications carry enough metadata for a later honest experiment.
+    """
+    symbols = _pilot_symbols(req.get("symbols"))
+    macro_series = [str(value).strip().upper() for value in req.get("macro_series", PILOT_DEFAULT_MACRO_SERIES) if str(value).strip()]
+    if not (1 <= len(macro_series) <= PILOT_MAX_MACRO_SERIES):
+        raise WorkflowError(f"public-data pilot accepts 1 to {PILOT_MAX_MACRO_SERIES} macro series")
+    if len(set(macro_series)) != len(macro_series):
+        raise WorkflowError("public-data pilot macro series must be unique")
+    try:
+        macro_start = pd.Timestamp(req.get("macro_start", "2015-01-01"))
+        as_of = pd.Timestamp(req.get("as_of", pd.Timestamp.now().date()))
+    except Exception as error:
+        raise WorkflowError("macro dates must be valid ISO dates") from error
+    if macro_start > as_of:
+        raise WorkflowError("macro start must be on or before the as-of date")
+
+    text_doc = None
+    document = req.get("text_document")
+    if document:
+        text = str(document.get("text", ""))
+        if not text.strip():
+            raise WorkflowError("text document cannot be empty")
+        if len(text) > PILOT_MAX_DOCUMENT_CHARS:
+            raise WorkflowError(f"text document exceeds {PILOT_MAX_DOCUMENT_CHARS:,} characters")
+        try:
+            text_doc = TextDocument(
+                symbol=str(document.get("symbol", "")).strip().upper(),
+                available_at=pd.Timestamp(document.get("available_at")),
+                source=str(document.get("source", "")).strip(),
+                document_id=str(document.get("document_id", "")).strip(),
+                text=text,
+            )
+        except (TypeError, ValueError) as error:
+            raise WorkflowError(f"invalid text document metadata: {error}") from error
+        if pd.Timestamp(text_doc.available_at).date() > as_of.date():
+            raise WorkflowError(
+                "document available date must be on or before the pilot's available-through date"
+            )
+
+    sec = sec_provider or SecEdgarProvider()
+    macro = macro_provider or FredAlfredProvider()
+    sec_obs = sec.fundamentals(symbols)
+    sec_summary = []
+    warnings = []
+    for symbol in symbols:
+        rows = sec_obs[sec_obs["symbol"] == symbol]
+        first_available = pd.Timestamp(rows["available_date"].min()) if not rows.empty else None
+        latest_available = pd.Timestamp(rows["available_date"].max()) if not rows.empty else None
+        if rows.empty:
+            warnings.append(
+                f"{symbol}: SEC returned no supported 10-K/10-Q company facts. "
+                "Do not use this ticker in a fundamental experiment until its coverage is resolved."
+            )
+        elif first_available > macro_start:
+            warnings.append(
+                f"{symbol}: SEC coverage begins on {first_available.date()}, after the requested "
+                f"history start of {macro_start.date()}. Treat earlier history as unavailable."
+            )
+        sec_summary.append({
+            "symbol": symbol,
+            "observations": int(len(rows)),
+            "metrics": int(rows["metric"].nunique()) if not rows.empty else 0,
+            "first_available": first_available,
+            "latest_available": latest_available,
+        })
+
+    macro_summary = []
+    for series_id in macro_series:
+        try:
+            observations = macro.observations(series_id, start=str(macro_start.date()), end=str(as_of.date()))
+        except RuntimeError as error:
+            raise WorkflowError(str(error)) from error
+        if observations.empty:
+            raise WorkflowError(
+                f"{series_id}: FRED returned no point-in-time observations for the requested date range."
+            )
+        latest = _latest_known_macro(observations, as_of)
+        if latest is None:
+            raise WorkflowError(
+                f"{series_id}: FRED returned no value known by the requested as-of date of {as_of.date()}."
+            )
+        macro_summary.append({
+            "series_id": series_id,
+            "vintages": int(len(observations)),
+            "latest_value": None if latest is None else latest["value"],
+            "observation_date": None if latest is None else latest["observation_date"],
+            "available_date": None if latest is None else latest["available_date"],
+        })
+
+    text_result = None
+    if text_doc:
+        feature = (text_extractor or FinBertExtractor()).extract(text_doc)
+        text_result = {
+            "symbol": feature.symbol,
+            "available_at": feature.available_at,
+            "source": feature.source,
+            "document_id": feature.document_id,
+            "model": feature.model,
+            "sentiment": feature.sentiment,
+            "positive_probability": feature.positive_probability,
+            "negative_probability": feature.negative_probability,
+            "neutral_probability": feature.neutral_probability,
+        }
+
+    return _jsonable({
+        "symbols": symbols,
+        "as_of": as_of,
+        "sec": sec_summary,
+        "macro": macro_summary,
+        "warnings": warnings,
+        "text_feature": text_result,
+        "note": "Pilot only: provenance and availability validation, not a trading result.",
+    })
 
 
 def _downsample_curve(s: pd.Series, max_points: int = 500) -> list[dict]:

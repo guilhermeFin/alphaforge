@@ -12,11 +12,18 @@ Correctness > cleverness. A single embarrassing false-positive backtest damages
 the brand more than a missing feature.
 """
 
+from dotenv import load_dotenv
+
+# Local convenience only: deployment environment variables always win because
+# override=False.  The ignored .env file keeps credentials out of source control.
+load_dotenv(override=False)
+
 from . import (data, factors, metrics, backtest, walkforward, stats_guards,
                fundamentals, providers, signal_quality, factor_lib, overfitting,
-               trial_ledger, attribution)
+               trial_ledger, attribution, econometrics, macro, text_features)
 
 __all__ = ["data", "factors", "metrics", "backtest", "walkforward", "stats_guards",
            "fundamentals", "providers", "signal_quality", "factor_lib",
-           "overfitting", "trial_ledger", "attribution"]
+           "overfitting", "trial_ledger", "attribution", "econometrics", "macro",
+           "text_features"]
 __version__ = "0.0.1"

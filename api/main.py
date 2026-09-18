@@ -26,7 +26,7 @@ from pydantic import BaseModel, ConfigDict, Field  # noqa: E402
 
 from api.service import (  # noqa: E402
     DISCLAIMER, FACTORS, PROVIDERS, WorkflowError, run_backtest_workflow,
-    run_model_comparison,
+    run_model_comparison, run_public_data_pilot, run_real_document_batch,
 )
 from research.trial_ledger import TrialLedger  # noqa: E402
 from api.security import install_security, secure_cookies  # noqa: E402
@@ -75,6 +75,35 @@ class MLCompareRequest(BacktestRequest):
         default=None, max_length=16,
         description="which models in the ladder to run (default: the full ladder)")
     horizon: int = Field(21, ge=1, le=63, description="forward-return label horizon (trading days)")
+
+
+class PilotTextDocument(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    symbol: str = Field(..., min_length=1, max_length=10)
+    available_at: str = Field(..., min_length=10, max_length=64)
+    source: str = Field(..., min_length=1, max_length=80)
+    document_id: str = Field(..., min_length=1, max_length=160)
+    text: str = Field(..., min_length=1, max_length=12_000)
+
+
+class PublicDataPilotRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    symbols: list[str] = Field(default_factory=lambda: ["AAPL", "MSFT", "NVDA", "JPM", "XOM"], max_length=5)
+    macro_series: list[str] = Field(default_factory=lambda: ["CPIAUCSL", "UNRATE", "DGS10"], max_length=5)
+    macro_start: str = Field("2015-01-01", min_length=10, max_length=10)
+    as_of: str = Field(..., min_length=10, max_length=10)
+    text_document: PilotTextDocument | None = None
+
+
+class RealDocumentBatchRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    symbols: list[str] = Field(default_factory=lambda: ["AAPL", "MSFT", "NVDA", "JPM", "XOM"], max_length=5)
+    forms: list[str] = Field(default_factory=lambda: ["8-K"], max_length=3)
+    as_of: str = Field(..., min_length=10, max_length=10)
+    per_symbol: int = Field(1, ge=1, le=2)
 
 
 # Per-workspace trial ledgers. A single global ledger would conflate users (one
@@ -184,3 +213,23 @@ def ml_compare(req: MLCompareRequest, request: Request) -> dict:
         raise HTTPException(status_code=500, detail=f"model comparison failed: {type(e).__name__}: {e}")
     _maybe_persist_run(request, "ml_compare", req.model_dump(), result)
     return result
+
+
+@app.post("/public-data-pilot")
+def public_data_pilot(req: PublicDataPilotRequest) -> dict:
+    try:
+        return run_public_data_pilot(req.model_dump())
+    except WorkflowError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"public-data pilot failed: {type(e).__name__}: {e}")
+
+
+@app.post("/real-document-batch")
+def real_document_batch(req: RealDocumentBatchRequest) -> dict:
+    try:
+        return run_real_document_batch(req.model_dump())
+    except WorkflowError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"real-document batch failed: {type(e).__name__}: {e}")
