@@ -1,7 +1,7 @@
 import pandas as pd
 import pytest
 
-from research.text_features import FinBertExtractor, TextDocument
+from research.text_features import FINBERT_MAX_CHARS, FinBertExtractor, TextDocument
 
 
 class FakeFinBertClient:
@@ -52,6 +52,23 @@ def test_finbert_retries_a_temporary_gateway_failure():
     feature = FinBertExtractor(client=client, sleep=lambda _seconds: None).extract(doc)
     assert client.calls == 3
     assert feature.sentiment == pytest.approx(0.60)
+
+
+def test_finbert_bounds_long_text_before_the_model_call():
+    class CapturingClient(FakeFinBertClient):
+        def text_classification(self, text, model):
+            self.text = text
+            return [
+                {"label": "positive", "score": 0.70},
+                {"label": "negative", "score": 0.10},
+                {"label": "neutral", "score": 0.20},
+            ]
+
+    client = CapturingClient()
+    document = TextDocument("ABC", pd.Timestamp("2024-05-01"), "SEC 8-K", "doc", "word " * 1_000)
+    FinBertExtractor(client=client).extract(document)
+    assert len(client.text) <= FINBERT_MAX_CHARS
+    assert client.text.endswith("word")
 
 
 def test_finbert_requires_a_token_when_no_client_is_supplied(monkeypatch):

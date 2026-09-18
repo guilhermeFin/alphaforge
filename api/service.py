@@ -18,6 +18,7 @@ import pandas as pd
 from research import data, factors, factor_lib, fundamentals, signal_quality, stats_guards, overfitting
 from research.macro import FredAlfredProvider
 from research.providers import SecEdgarProvider
+from research.sec_documents import SUPPORTED_FORMS, SecDocumentProvider
 from research.text_features import FinBertExtractor, TextDocument
 from research.backtest import backtest
 from research.walkforward import split_backtest, walk_forward
@@ -270,6 +271,7 @@ PILOT_DEFAULT_MACRO_SERIES = ("CPIAUCSL", "UNRATE", "DGS10")
 PILOT_MAX_SYMBOLS = 5
 PILOT_MAX_MACRO_SERIES = 5
 PILOT_MAX_DOCUMENT_CHARS = 12_000
+DOCUMENT_BATCH_MAX_PER_SYMBOL = 2
 
 
 def _pilot_symbols(values: list[str] | None) -> list[str]:
@@ -297,6 +299,61 @@ def _latest_known_macro(observations: pd.DataFrame, as_of: pd.Timestamp) -> dict
         "observation_date": pd.Timestamp(row["observation_date"]),
         "available_date": pd.Timestamp(row["available_date"]),
     }
+
+
+def run_real_document_batch(
+    req: dict,
+    *,
+    document_provider: Any | None = None,
+    text_extractor: Any | None = None,
+) -> dict:
+    """Classify a small, timestamped batch of real SEC filing excerpts.
+
+    This is a provenance step only. It retrieves documents filed by a declared
+    cutoff, preserves each filing date, and does not create a trading result.
+    """
+    symbols = _pilot_symbols(req.get("symbols"))
+    forms = {str(value).strip().upper() for value in req.get("forms", ["8-K"]) if str(value).strip()}
+    if not forms or not forms.issubset(SUPPORTED_FORMS):
+        raise WorkflowError(f"document batch forms must be selected from {sorted(SUPPORTED_FORMS)}")
+    try:
+        as_of = pd.Timestamp(req.get("as_of", pd.Timestamp.now().date()))
+    except Exception as error:
+        raise WorkflowError("available-through date must be a valid ISO date") from error
+    per_symbol = int(req.get("per_symbol", 1))
+    if not 1 <= per_symbol <= DOCUMENT_BATCH_MAX_PER_SYMBOL:
+        raise WorkflowError(f"document batch accepts 1 to {DOCUMENT_BATCH_MAX_PER_SYMBOL} filings per ticker")
+
+    provider = document_provider or SecDocumentProvider()
+    documents, warnings = provider.documents(symbols, forms, as_of, per_symbol)
+    if not documents:
+        raise WorkflowError("SEC returned no usable filing excerpts for the selected cutoff and forms")
+
+    extractor = text_extractor or FinBertExtractor()
+    features = []
+    for document in documents:
+        feature = extractor.extract(document.as_text_document())
+        features.append({
+            "symbol": feature.symbol,
+            "available_at": feature.available_at,
+            "form": document.form,
+            "document_id": feature.document_id,
+            "source_url": document.url,
+            "model": feature.model,
+            "sentiment": feature.sentiment,
+            "positive_probability": feature.positive_probability,
+            "negative_probability": feature.negative_probability,
+            "neutral_probability": feature.neutral_probability,
+        })
+    return _jsonable({
+        "symbols": symbols,
+        "as_of": as_of,
+        "forms": sorted(forms),
+        "filings_requested": per_symbol,
+        "features": features,
+        "warnings": warnings,
+        "note": "Real SEC filing excerpts classified with filing-date provenance; not a trading result.",
+    })
 
 
 def run_public_data_pilot(

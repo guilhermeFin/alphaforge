@@ -13,6 +13,8 @@ from typing import Any, Callable
 
 import pandas as pd
 
+FINBERT_MAX_CHARS = 1_200
+
 
 @dataclass(frozen=True)
 class TextDocument:
@@ -66,6 +68,19 @@ def _retryable_status(error: Exception) -> int | None:
     return status or getattr(error, "status_code", None) or getattr(error, "code", None)
 
 
+def _finbert_input(text: str) -> str:
+    """Keep model input safely within FinBERT's 512-token context window.
+
+    The provider accepts text, not token IDs. A conservative character cap avoids
+    provider-side tensor errors for long SEC HTML excerpts while retaining words
+    rather than cutting in the middle of one.
+    """
+    clipped = text[:FINBERT_MAX_CHARS]
+    if len(text) <= FINBERT_MAX_CHARS:
+        return clipped
+    return clipped.rsplit(" ", 1)[0] or clipped
+
+
 class FinBertExtractor:
     """Use FinBERT through Hugging Face Inference Providers, only when invoked."""
 
@@ -93,7 +108,7 @@ class FinBertExtractor:
     def extract(self, document: TextDocument) -> FinBertFeature:
         for attempt in range(3):
             try:
-                result = self.client.text_classification(document.text, model=self.model)
+                result = self.client.text_classification(_finbert_input(document.text), model=self.model)
                 break
             except Exception as error:
                 status = _retryable_status(error)

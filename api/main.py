@@ -26,7 +26,7 @@ from pydantic import BaseModel, ConfigDict, Field  # noqa: E402
 
 from api.service import (  # noqa: E402
     DISCLAIMER, FACTORS, PROVIDERS, WorkflowError, run_backtest_workflow,
-    run_model_comparison, run_public_data_pilot,
+    run_model_comparison, run_public_data_pilot, run_real_document_batch,
 )
 from research.trial_ledger import TrialLedger  # noqa: E402
 from api.security import install_security, secure_cookies  # noqa: E402
@@ -95,6 +95,15 @@ class PublicDataPilotRequest(BaseModel):
     macro_start: str = Field("2015-01-01", min_length=10, max_length=10)
     as_of: str = Field(..., min_length=10, max_length=10)
     text_document: PilotTextDocument | None = None
+
+
+class RealDocumentBatchRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    symbols: list[str] = Field(default_factory=lambda: ["AAPL", "MSFT", "NVDA", "JPM", "XOM"], max_length=5)
+    forms: list[str] = Field(default_factory=lambda: ["8-K"], max_length=3)
+    as_of: str = Field(..., min_length=10, max_length=10)
+    per_symbol: int = Field(1, ge=1, le=2)
 
 
 # Per-workspace trial ledgers. A single global ledger would conflate users (one
@@ -214,3 +223,13 @@ def public_data_pilot(req: PublicDataPilotRequest) -> dict:
         raise HTTPException(status_code=400, detail=str(e))
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"public-data pilot failed: {type(e).__name__}: {e}")
+
+
+@app.post("/real-document-batch")
+def real_document_batch(req: RealDocumentBatchRequest) -> dict:
+    try:
+        return run_real_document_batch(req.model_dump())
+    except WorkflowError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"real-document batch failed: {type(e).__name__}: {e}")

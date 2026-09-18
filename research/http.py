@@ -6,15 +6,20 @@ import json
 import zlib
 
 
+def decode_response_bytes(raw: bytes, content_encoding: str | None = None) -> bytes:
+    """Decompress public API response bytes when needed."""
+    encoding = (content_encoding or "").lower()
+    if "gzip" in encoding or raw.startswith(b"\x1f\x8b"):
+        return gzip.decompress(raw)
+    if "deflate" in encoding:
+        return zlib.decompress(raw)
+    return raw
+
+
 def decode_json_bytes(raw: bytes, content_encoding: str | None = None) -> dict:
     """Decode JSON responses that public APIs may transparently compress.
 
     Some public endpoints send gzip even when a client did not explicitly request
     it, so the gzip magic bytes are a fallback alongside the standard header.
     """
-    encoding = (content_encoding or "").lower()
-    if "gzip" in encoding or raw.startswith(b"\x1f\x8b"):
-        raw = gzip.decompress(raw)
-    elif "deflate" in encoding:
-        raw = zlib.decompress(raw)
-    return json.loads(raw.decode("utf-8"))
+    return json.loads(decode_response_bytes(raw, content_encoding).decode("utf-8"))

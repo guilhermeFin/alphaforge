@@ -7,6 +7,7 @@ from streamlit.testing.v1 import AppTest
 
 from api import service
 from api.main import app
+from research.sec_documents import SecFilingDocument
 
 
 def _sec_obs():
@@ -55,6 +56,24 @@ class FakeTextExtractor:
         return FakeFeature()
 
 
+class FakeDocumentProvider:
+    def documents(self, symbols, forms, filed_before, per_symbol):
+        assert symbols == ["AAPL"] and forms == {"8-K"} and per_symbol == 1
+        assert filed_before == pd.Timestamp("2024-06-01")
+        return [SecFilingDocument(
+            symbol="AAPL", available_at=pd.Timestamp("2024-05-02"), form="8-K",
+            accession_number="0001", url="https://www.sec.gov/example", text="Revenue improved.",
+        )], []
+
+
+class FakeBatchTextExtractor:
+    def extract(self, document):
+        return FakeFeature(
+            symbol=document.symbol, available_at=document.available_at, source=document.source,
+            document_id=document.document_id,
+        )
+
+
 def _request(with_text=False):
     req = {
         "symbols": ["AAPL"],
@@ -87,6 +106,16 @@ def test_public_data_pilot_summarizes_point_in_time_sources_without_backtest():
     assert "AAPL: SEC coverage begins" in out["warnings"][0]
     assert out["text_feature"]["sentiment"] == 0.5
     assert "not a trading result" in out["note"]
+
+
+def test_real_document_batch_preserves_sec_filing_provenance():
+    out = service.run_real_document_batch(
+        {"symbols": ["AAPL"], "forms": ["8-K"], "as_of": "2024-06-01", "per_symbol": 1},
+        document_provider=FakeDocumentProvider(), text_extractor=FakeBatchTextExtractor(),
+    )
+    assert out["features"][0]["available_at"] == "2024-05-02T00:00:00"
+    assert out["features"][0]["form"] == "8-K"
+    assert out["features"][0]["source_url"] == "https://www.sec.gov/example"
 
 
 def test_public_data_pilot_rejects_unbounded_input_before_networking():
@@ -131,3 +160,13 @@ def test_public_data_pilot_page_renders_without_networking(monkeypatch):
     assert not at.exception
     assert at.title[0].value == "Public Data Pilot"
     assert any("Run public-data pilot" in button.label for button in at.button)
+
+
+def test_real_document_batch_page_renders_without_networking(monkeypatch):
+    page = str((__import__("pathlib").Path(__file__).resolve().parent.parent / "app" / "pages" / "2_Real_Document_Batch.py"))
+    monkeypatch.setenv("ALPHAFORGE_API", "http://127.0.0.1:1")
+    at = AppTest.from_file(page, default_timeout=30)
+    at.run()
+    assert not at.exception
+    assert at.title[0].value == "Real Document Batch"
+    assert any("Classify real filing batch" in button.label for button in at.button)
