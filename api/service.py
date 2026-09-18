@@ -326,6 +326,29 @@ def run_public_data_pilot(
     if macro_start > as_of:
         raise WorkflowError("macro start must be on or before the as-of date")
 
+    text_doc = None
+    document = req.get("text_document")
+    if document:
+        text = str(document.get("text", ""))
+        if not text.strip():
+            raise WorkflowError("text document cannot be empty")
+        if len(text) > PILOT_MAX_DOCUMENT_CHARS:
+            raise WorkflowError(f"text document exceeds {PILOT_MAX_DOCUMENT_CHARS:,} characters")
+        try:
+            text_doc = TextDocument(
+                symbol=str(document.get("symbol", "")).strip().upper(),
+                available_at=pd.Timestamp(document.get("available_at")),
+                source=str(document.get("source", "")).strip(),
+                document_id=str(document.get("document_id", "")).strip(),
+                text=text,
+            )
+        except (TypeError, ValueError) as error:
+            raise WorkflowError(f"invalid text document metadata: {error}") from error
+        if pd.Timestamp(text_doc.available_at).date() > as_of.date():
+            raise WorkflowError(
+                "document available date must be on or before the pilot's available-through date"
+            )
+
     sec = sec_provider or SecEdgarProvider()
     macro = macro_provider or FredAlfredProvider()
     sec_obs = sec.fundamentals(symbols)
@@ -355,7 +378,10 @@ def run_public_data_pilot(
 
     macro_summary = []
     for series_id in macro_series:
-        observations = macro.observations(series_id, start=str(macro_start.date()), end=str(as_of.date()))
+        try:
+            observations = macro.observations(series_id, start=str(macro_start.date()), end=str(as_of.date()))
+        except RuntimeError as error:
+            raise WorkflowError(str(error)) from error
         if observations.empty:
             raise WorkflowError(
                 f"{series_id}: FRED returned no point-in-time observations for the requested date range."
@@ -374,23 +400,7 @@ def run_public_data_pilot(
         })
 
     text_result = None
-    document = req.get("text_document")
-    if document:
-        text = str(document.get("text", ""))
-        if not text.strip():
-            raise WorkflowError("text document cannot be empty")
-        if len(text) > PILOT_MAX_DOCUMENT_CHARS:
-            raise WorkflowError(f"text document exceeds {PILOT_MAX_DOCUMENT_CHARS:,} characters")
-        try:
-            text_doc = TextDocument(
-                symbol=str(document.get("symbol", "")).strip().upper(),
-                available_at=pd.Timestamp(document.get("available_at")),
-                source=str(document.get("source", "")).strip(),
-                document_id=str(document.get("document_id", "")).strip(),
-                text=text,
-            )
-        except (TypeError, ValueError) as error:
-            raise WorkflowError(f"invalid text document metadata: {error}") from error
+    if text_doc:
         feature = (text_extractor or FinBertExtractor()).extract(text_doc)
         text_result = {
             "symbol": feature.symbol,

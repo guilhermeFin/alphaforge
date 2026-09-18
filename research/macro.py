@@ -202,5 +202,14 @@ class FredAlfredProvider:
         except HTTPError as error:
             if error.code != 400:
                 raise
-            rows = self._fetch_realtime_chunks(params, start, end)
+            try:
+                rows = self._fetch_realtime_chunks(params, start, end)
+            except HTTPError as chunk_error:
+                if chunk_error.code == 400 and end is not None:
+                    suggested_end = (pd.Timestamp(end) - pd.Timedelta(days=1)).date()
+                    raise RuntimeError(
+                        f"FRED cannot provide {series_id} through {end} yet. "
+                        f"Choose {suggested_end} or an earlier available-through date."
+                    ) from chunk_error
+                raise
         return fred_vintages_to_observations({"observations": rows}, series_id)

@@ -97,6 +97,16 @@ def test_fred_provider_retries_large_daily_series_in_realtime_chunks():
     assert list(out["value"]) == [4.0]
 
 
+def test_fred_provider_explains_when_the_requested_cutoff_is_not_available():
+    def fetch(url):
+        raise HTTPError(url, 400, "Bad Request", None, BytesIO())
+
+    with pytest.raises(RuntimeError, match="Choose 2024-12-29 or an earlier"):
+        FredAlfredProvider(api_key="test-key", fetch_json=fetch).observations(
+            "DGS10", start="2024-01-01", end="2024-12-30"
+        )
+
+
 def test_fred_fetch_explains_an_unregistered_api_key(monkeypatch):
     def fail(*_args, **_kwargs):
         raise HTTPError(

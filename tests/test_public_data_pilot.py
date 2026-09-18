@@ -107,6 +107,17 @@ def test_public_data_pilot_rejects_empty_macro_history():
         )
 
 
+def test_public_data_pilot_rejects_a_document_after_its_as_of_date():
+    class NeverCalled:
+        def fundamentals(self, *_args, **_kwargs):
+            raise AssertionError("future document must be rejected before source calls")
+
+    req = _request(with_text=True)
+    req["text_document"]["available_at"] = "2024-06-02T16:30:00"
+    with pytest.raises(service.WorkflowError, match="on or before"):
+        service.run_public_data_pilot(req, sec_provider=NeverCalled())
+
+
 def test_public_data_pilot_api_rejects_unknown_fields():
     response = TestClient(app).post("/public-data-pilot", json={**_request(), "surprise": True})
     assert response.status_code == 422

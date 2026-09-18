@@ -36,7 +36,7 @@ with st.sidebar:
     tickers_text = st.text_input("Tickers", "AAPL, MSFT, NVDA, JPM, XOM")
     macro_text = st.text_input("Macro series", "CPIAUCSL, UNRATE, DGS10")
     macro_start = st.date_input("Macro history from", value=dt.date(2015, 1, 1))
-    as_of = st.date_input("Available through", value=dt.date.today())
+    as_of = st.date_input("Available through", value=dt.date.today() - dt.timedelta(days=1))
     include_text = st.checkbox("Classify one dated document")
 
     text_document = None
@@ -71,7 +71,7 @@ if run:
         with st.spinner("Checking public-data provenance..."):
             st.session_state["public_data_pilot"] = _run(payload)
     except WorkflowError as error:
-        st.error(f"Pilot input problem: {error}")
+        st.error(f"Pilot needs attention: {error}")
     except Exception as error:
         st.error(f"Pilot failed: {type(error).__name__}: {error}")
 
