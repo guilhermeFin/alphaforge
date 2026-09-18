@@ -7,8 +7,9 @@ join and can retain the document ID and model identifier in its trial metadata.
 from __future__ import annotations
 
 import os
+import time
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, Callable
 
 import pandas as pd
 
@@ -58,11 +59,25 @@ def _classification_scores(result: Any) -> dict[str, float]:
     return scores
 
 
+def _retryable_status(error: Exception) -> int | None:
+    """Return a temporary gateway status from common Hugging Face HTTP errors."""
+    response = getattr(error, "response", None)
+    status = getattr(response, "status_code", None)
+    return status or getattr(error, "status_code", None) or getattr(error, "code", None)
+
+
 class FinBertExtractor:
     """Use FinBERT through Hugging Face Inference Providers, only when invoked."""
 
-    def __init__(self, token: str | None = None, client: Any | None = None, model: str = "ProsusAI/finbert"):
+    def __init__(
+        self,
+        token: str | None = None,
+        client: Any | None = None,
+        model: str = "ProsusAI/finbert",
+        sleep: Callable[[float], None] = time.sleep,
+    ):
         self.model = model
+        self._sleep = sleep
         if client is not None:
             self.client = client
             return
@@ -76,7 +91,20 @@ class FinBertExtractor:
         self.client = InferenceClient(provider="hf-inference", api_key=token)
 
     def extract(self, document: TextDocument) -> FinBertFeature:
-        result = self.client.text_classification(document.text, model=self.model)
+        for attempt in range(3):
+            try:
+                result = self.client.text_classification(document.text, model=self.model)
+                break
+            except Exception as error:
+                status = _retryable_status(error)
+                if status not in {429, 500, 502, 503, 504}:
+                    raise
+                if attempt == 2:
+                    raise RuntimeError(
+                        "Hugging Face inference is temporarily unavailable after 3 attempts. "
+                        "Wait a minute and run the document check again."
+                    ) from error
+                self._sleep(float(2**attempt))
         scores = _classification_scores(result)
         sentiment = scores["positive"] - scores["negative"]
         return FinBertFeature(
