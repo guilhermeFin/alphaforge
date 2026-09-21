@@ -170,6 +170,33 @@ def test_cpcv_has_zero_label_overlap_per_test_group():
     assert seen_paths == math.comb(n_groups, n_test)
 
 
+def test_split_audit_confirms_purged_split_integrity_and_group_stress_path():
+    _, _, X, _, meta = _build_panel()
+    splits = list(me.purged_kfold_split(meta["label_start"], meta["label_end"], n_splits=5))
+    audit = me.audit_splits(meta["label_start"], meta["label_end"], splits)
+    assert audit["n_folds"] == 5
+    assert not audit["has_label_interval_overlap"]
+
+    groups = X.index.get_level_values("asset")
+    group_splits = list(me.group_holdout_split(groups, n_splits=4))
+    group_audit = me.audit_splits(meta["label_start"], meta["label_end"], group_splits, groups=groups)
+    assert not group_audit["has_group_overlap"]
+
+
+def test_cpcv_path_reconstruction_covers_each_chronological_group_once():
+    group_indices = [np.arange(group * 10, (group + 1) * 10) for group in range(6)]
+    predictions = {}
+    for first, second in __import__("itertools").combinations(range(6), 2):
+        index = np.r_[group_indices[first], group_indices[second]]
+        predictions[(first, second)] = pd.Series(index.astype(float), index=index)
+    paths = me.reconstruct_cpcv_paths(predictions, group_indices)
+    assert paths.shape == (60, 5)
+    assert not paths.isna().any().any()
+    for column in paths:
+        np.testing.assert_allclose(paths[column].to_numpy(), np.arange(60, dtype=float))
+    assert me.cpcv_path_design(n_groups=4, n_test_groups=1) == [[(0,), (1,), (2,), (3,)]]
+
+
 # --------------------------------------------------------------------------- #
 # build_feature_panel: shape, labels, point-in-time
 # --------------------------------------------------------------------------- #
@@ -238,6 +265,7 @@ def test_evaluate_model_is_deterministic():
     assert r1["oos_long_short_sharpe"] == r2["oos_long_short_sharpe"]
     assert r1["per_fold_rank_ic"] == r2["per_fold_rank_ic"]
     assert r1["n_oos_predictions"] == r2["n_oos_predictions"] == len(X)
+    assert not r1["split_audit"]["has_label_interval_overlap"]
 
 
 def test_evaluate_model_accepts_precomputed_splits_list():

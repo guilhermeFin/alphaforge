@@ -9,8 +9,10 @@ it a fair stress-test of an honest backtester:
   * innovations are Student-t (fat-tailed) by default — so the engine's tail and
     normality diagnostics have something real to flag (Blitzstein Ch.6/Ch.10).
 
-A free, keyless yfinance provider is included for real tickers. We deliberately
-serve *derived* results downstream, never redistribute a raw vendor feed.
+A free, keyless yfinance provider is included for real tickers. A customer can
+also point ``ALPHAFORGE_LICENSED_DATA_PATH`` at a locally exported, validated
+licensed-data bundle; that vendor-neutral route never uploads or redistributes
+the source data. We deliberately serve *derived* results downstream.
 """
 from __future__ import annotations
 
@@ -123,11 +125,21 @@ def get_panel(
     provider: str = "synthetic",
     **kwargs,
 ) -> Panel:
-    """Stable entry point. provider ∈ {"synthetic", "yfinance"}."""
+    """Stable entry point for synthetic, Yahoo, or a local licensed bundle."""
     if provider == "synthetic":
         return make_synthetic_panel(symbols, start=start, **kwargs)
     if provider in ("yfinance", "yahoo"):
         return _yf_close_panel(symbols, start, end)
+    if provider in ("licensed_bundle", "licensed"):
+        # Delayed import prevents an optional local-data path from adding any
+        # start-up work to the deterministic synthetic/Yahoo providers.
+        from .licensed_data import load_price_panel
+        close, volume = load_price_panel(symbols, path=kwargs.get("bundle_path"))
+        if start is not None:
+            close, volume = close.loc[close.index >= pd.Timestamp(start)], volume.loc[volume.index >= pd.Timestamp(start)]
+        if end is not None:
+            close, volume = close.loc[close.index <= pd.Timestamp(end)], volume.loc[volume.index <= pd.Timestamp(end)]
+        return Panel(close=close, volume=volume)
     raise ValueError(f"unknown provider: {provider!r}")
 
 

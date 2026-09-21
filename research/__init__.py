@@ -20,10 +20,17 @@ load_dotenv(override=False)
 
 from . import (data, factors, metrics, backtest, walkforward, stats_guards,
                fundamentals, providers, signal_quality, factor_lib, overfitting,
-               trial_ledger, attribution, econometrics, macro, text_features)
+               trial_ledger, attribution, econometrics, macro, text_features,
+               event_study, local_history, portfolio, execution, validation,
+               reproducibility, paper, licensed_data, risk, statistical_rigor,
+               strategy_report, benchmark, tail_risk, evidence, robustness_matrix,
+               factor_diagnostics, research_protocol, microstructure, temporal_stability)
 
 __all__ = ["data", "factors", "metrics", "backtest", "walkforward", "stats_guards",
            "fundamentals", "providers", "signal_quality", "factor_lib",
            "overfitting", "trial_ledger", "attribution", "econometrics", "macro",
-           "text_features"]
+           "text_features", "event_study", "local_history", "portfolio", "execution",
+           "validation", "reproducibility", "paper", "licensed_data", "risk",
+           "statistical_rigor", "strategy_report", "benchmark", "tail_risk"]
+__all__ += ["evidence", "robustness_matrix", "factor_diagnostics", "research_protocol", "microstructure", "temporal_stability"]
 __version__ = "0.0.1"

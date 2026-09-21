@@ -2,17 +2,42 @@
 from __future__ import annotations
 
 import gzip
+import io
 import json
 import zlib
 
 
-def decode_response_bytes(raw: bytes, content_encoding: str | None = None) -> bytes:
+def _bounded_gzip(raw: bytes, max_decoded_bytes: int) -> bytes:
+    with gzip.GzipFile(fileobj=io.BytesIO(raw)) as stream:
+        decoded = stream.read(max_decoded_bytes + 1)
+    if len(decoded) > max_decoded_bytes:
+        raise ValueError(f"response expands beyond the {max_decoded_bytes // (1024 * 1024)} MB research limit")
+    return decoded
+
+
+def _bounded_deflate(raw: bytes, max_decoded_bytes: int) -> bytes:
+    stream = zlib.decompressobj()
+    decoded = stream.decompress(raw, max_decoded_bytes + 1)
+    if len(decoded) > max_decoded_bytes or stream.unconsumed_tail:
+        raise ValueError(f"response expands beyond the {max_decoded_bytes // (1024 * 1024)} MB research limit")
+    decoded += stream.flush()
+    if len(decoded) > max_decoded_bytes:
+        raise ValueError(f"response expands beyond the {max_decoded_bytes // (1024 * 1024)} MB research limit")
+    return decoded
+
+
+def decode_response_bytes(
+    raw: bytes,
+    content_encoding: str | None = None,
+    *,
+    max_decoded_bytes: int | None = None,
+) -> bytes:
     """Decompress public API response bytes when needed."""
     encoding = (content_encoding or "").lower()
     if "gzip" in encoding or raw.startswith(b"\x1f\x8b"):
-        return gzip.decompress(raw)
+        return _bounded_gzip(raw, max_decoded_bytes) if max_decoded_bytes else gzip.decompress(raw)
     if "deflate" in encoding:
-        return zlib.decompress(raw)
+        return _bounded_deflate(raw, max_decoded_bytes) if max_decoded_bytes else zlib.decompress(raw)
     return raw
 
 

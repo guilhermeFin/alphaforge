@@ -26,7 +26,9 @@ from pydantic import BaseModel, ConfigDict, Field  # noqa: E402
 
 from api.service import (  # noqa: E402
     DISCLAIMER, FACTORS, PROVIDERS, WorkflowError, run_backtest_workflow,
-    run_model_comparison, run_public_data_pilot, run_real_document_batch,
+    run_filing_event_study, run_model_comparison, run_public_data_pilot, run_real_document_batch,
+    run_portfolio_research, data_connections_status,
+    run_microstructure_lab,
 )
 from research.trial_ledger import TrialLedger  # noqa: E402
 from api.security import install_security, secure_cookies  # noqa: E402
@@ -77,6 +79,24 @@ class MLCompareRequest(BacktestRequest):
     horizon: int = Field(21, ge=1, le=63, description="forward-return label horizon (trading days)")
 
 
+class PortfolioResearchRequest(BacktestRequest):
+    """Free, historical portfolio controls.  No field can place a broker order."""
+    rebalance_frequency: str = Field("monthly")
+    allocation_method: str = Field(
+        "score_weighted",
+        description="score_weighted, equal_weight, inverse_volatility, or hierarchical_risk_parity",
+    )
+    max_name_weight: float = Field(0.10, ge=0.01, le=3.0)
+    max_turnover: float | None = Field(None, ge=0.0, le=3.0)
+    target_annual_vol: float | None = Field(0.15, ge=0.0, le=1.0)
+    spread_bps: float = Field(2.0, ge=0.0, le=200.0)
+    impact_bps: float = Field(12.0, ge=0.0, le=500.0)
+    short_borrow_bps: float = Field(50.0, ge=0.0, le=5_000.0)
+    capital: float = Field(1_000_000.0, gt=0.0, le=1_000_000_000.0)
+    max_participation: float = Field(0.05, gt=0.0, le=1.0)
+    adv_lookback: int = Field(20, ge=5, le=126)
+
+
 class PilotTextDocument(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -97,13 +117,73 @@ class PublicDataPilotRequest(BaseModel):
     text_document: PilotTextDocument | None = None
 
 
+class TimeIntegrityPolicyRequest(BaseModel):
+    """Optional overrides for the model-time integrity screen.
+
+    Omitting this object keeps the conservative defaults: observations scored by
+    a model that was not yet available, and observations with no model metadata,
+    stay out of the primary evidence cohort.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    enabled: bool = True
+    exclude_historically_unavailable: bool = True
+    exclude_missing_metadata: bool = True
+    exclude_training_overlap: bool = False
+
+
 class RealDocumentBatchRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    symbols: list[str] = Field(default_factory=lambda: ["AAPL", "MSFT", "NVDA", "JPM", "XOM"], max_length=5)
+    symbols: list[str] = Field(default_factory=lambda: ["AAPL", "MSFT", "NVDA", "JPM", "XOM"], max_length=25)
     forms: list[str] = Field(default_factory=lambda: ["8-K"], max_length=3)
     as_of: str = Field(..., min_length=10, max_length=10)
     per_symbol: int = Field(1, ge=1, le=2)
+    time_integrity: TimeIntegrityPolicyRequest | None = None
+
+
+class FilingEventFeature(BaseModel):
+    model_config = ConfigDict(extra="forbid", protected_namespaces=())
+
+    symbol: str = Field(..., min_length=1, max_length=10)
+    available_at: str = Field(..., min_length=10, max_length=64)
+    document_id: str = Field(..., min_length=1, max_length=160)
+    sentiment: float = Field(..., ge=-1.0, le=1.0)
+    # Optional so saved results from before the model-time gate still post. A
+    # missing model is reported as missing metadata, never assumed to be valid.
+    model: str | None = Field(None, max_length=160)
+
+
+class FilingEventStudyRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    features: list[FilingEventFeature] = Field(..., min_length=1, max_length=50)
+    horizon: int = Field(5, ge=1, le=21)
+    benchmark: str = Field("SPY", min_length=1, max_length=10)
+    time_integrity: TimeIntegrityPolicyRequest | None = None
+
+
+class MicrostructureTradeEvent(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    timestamp: str = Field(..., min_length=10, max_length=64)
+    price: float = Field(..., gt=0.0)
+    quantity: float = Field(..., gt=0.0)
+    is_buyer_maker: bool
+
+
+class MicrostructureRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    source: str = Field("synthetic", pattern="^(synthetic|binance_events)$")
+    events: list[MicrostructureTradeEvent] | None = Field(None, max_length=20_000)
+    seed: int = Field(42, ge=0, le=2_147_483_647)
+    window_events: int = Field(32, ge=8, le=500)
+    horizon_events: int = Field(30, ge=5, le=500)
+    maker_fee_bps: float = Field(1.0, ge=0.0, le=100.0)
+    latency_events: int = Field(2, ge=0, le=100)
+    max_inventory: int = Field(8, ge=1, le=100)
 
 
 # Per-workspace trial ledgers. A single global ledger would conflate users (one
@@ -151,6 +231,14 @@ def _maybe_persist_run(request: Request, kind: str, req_dict: dict, result: dict
         if kind == "backtest":
             summary = {"meta": result.get("meta"), "scorecard": result.get("scorecard"),
                        "verdict": verdict}
+        elif kind == "portfolio_research":
+            summary = {
+                "meta": result.get("meta"),
+                "scorecard": result.get("scorecard"),
+                "portfolio": result.get("portfolio"),
+                "manifest": result.get("manifest"),
+                "verdict": verdict,
+            }
         else:
             summary = {"verdict": verdict, "leaderboard": result.get("leaderboard"),
                        "complexity_beats_linear": result.get("complexity_beats_linear"),
@@ -175,6 +263,12 @@ def root() -> dict:
 @app.get("/health")
 def health() -> dict:
     return {"status": "ok", "engine_version": "0.0.1", "disclaimer": DISCLAIMER}
+
+
+@app.get("/data-connections")
+def data_connections() -> dict:
+    """Connection readiness only. It never returns paths, keys, or raw vendor data."""
+    return data_connections_status()
 
 
 @app.post("/backtest")
@@ -215,6 +309,20 @@ def ml_compare(req: MLCompareRequest, request: Request) -> dict:
     return result
 
 
+@app.post("/portfolio-research")
+def portfolio_research(req: PortfolioResearchRequest, request: Request, response: Response) -> dict:
+    """Historical portfolio construction, execution stress, and paper-plan output."""
+    ledger = _get_ledger(request, response, principal=current_principal(request))
+    try:
+        result = run_portfolio_research(req.model_dump(), ledger=ledger)
+    except WorkflowError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"portfolio research failed: {type(e).__name__}: {e}")
+    _maybe_persist_run(request, "portfolio_research", req.model_dump(), result)
+    return result
+
+
 @app.post("/public-data-pilot")
 def public_data_pilot(req: PublicDataPilotRequest) -> dict:
     try:
@@ -233,3 +341,24 @@ def real_document_batch(req: RealDocumentBatchRequest) -> dict:
         raise HTTPException(status_code=400, detail=str(e))
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"real-document batch failed: {type(e).__name__}: {e}")
+
+
+@app.post("/filing-event-study")
+def filing_event_study(req: FilingEventStudyRequest) -> dict:
+    try:
+        return run_filing_event_study(req.model_dump())
+    except WorkflowError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"filing event study failed: {type(e).__name__}: {e}")
+
+
+@app.post("/microstructure-study")
+def microstructure_study(req: MicrostructureRequest) -> dict:
+    """Trade-flow study and assumption-visible market-making simulation."""
+    try:
+        return run_microstructure_lab(req.model_dump())
+    except WorkflowError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"microstructure study failed: {type(e).__name__}: {e}")

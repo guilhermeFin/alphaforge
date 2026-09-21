@@ -1,0 +1,50 @@
+<style>
+:root { --af-ink: #202a30; --af-muted: #63727c; --af-line: #dfe5e8; --af-accent: #087f70; }
+.stApp { background: #fff; color: var(--af-ink); }
+html, body, [data-testid="stAppViewContainer"] { letter-spacing: 0; }
+[data-testid="stMainBlockContainer"] { max-width: 1480px; padding: 2.3rem 2.8rem 2rem; }
+[data-testid="stSidebar"] { background: #f3f5f6; border-right: 1px solid var(--af-line); }
+[data-testid="stSidebarUserContent"] { padding-top: 1.8rem; }
+[data-testid="stSidebarNav"] { display: none; }
+.af-brand { display: flex; align-items: center; gap: 12px; font-size: 23px; font-weight: 750; margin: 0 0 22px; }
+.af-mark { display: grid; place-items: center; width: 36px; height: 36px; background: #202a30; color: #fff; font-size: 13px; border-radius: 6px; }
+.af-eyebrow { font-size: 11px; font-weight: 650; color: var(--af-muted); margin-bottom: 10px; }
+h1 { font-size: 32px !important; line-height: 1.2 !important; font-weight: 700 !important; padding-bottom: 8px !important; }
+h2 { font-size: 22px !important; line-height: 1.3 !important; }
+h3 { font-size: 18px !important; line-height: 1.35 !important; }
+[data-testid="stCaptionContainer"] { color: var(--af-muted); }
+[data-testid="stCaptionContainer"] p { color: #586872; opacity: 1; }
+[data-testid="stMetric"] { padding: 12px 0 16px; border-bottom: 2px solid var(--af-line); min-height: 100px; }
+[data-testid="stMetricValue"] { font-size: 29px; font-weight: 650; }
+[data-testid="stMetricLabel"] { font-size: 13px; color: var(--af-muted); }
+[data-testid="stMetricLabel"] { min-height: 36px; align-items: flex-start; }
+[data-testid="stMetricLabel"] p { white-space: normal; overflow: visible; text-overflow: clip; }
+[data-testid="stMetricValue"] > div { white-space: normal; overflow-wrap: anywhere; }
+[data-testid="stAlert"] { border-radius: 6px; border: 1px solid var(--af-line); }
+[data-testid="stAlert"] p { font-size: 14px; }
+[data-testid="stBaseButton-primary"] { background: var(--af-accent); border-color: var(--af-accent); min-height: 42px; }
+button, input, textarea, [data-baseweb="select"] > div { border-radius: 6px !important; }
+button p { white-space: normal; overflow-wrap: anywhere; }
+[data-testid="stPageLink-NavLink"] { min-height: 42px; border-radius: 6px; }
+[data-testid="stPageLink-NavLink"][aria-current="page"] { background: #e0eeea; color: #065e54; }
+[data-baseweb="tab-list"] { gap: 24px; border-bottom: 1px solid var(--af-line); }
+[data-baseweb="tab"] { font-size: 14px; height: 46px; padding: 0 0 10px; }
+[data-testid="stExpander"] { border-radius: 6px; }
+[data-testid="stCode"] pre, [data-testid="stCode"] code { font-family: Arial, sans-serif !important; font-size: 15px !important; line-height: 1.8 !important; }
+.af-empty { padding: 42px 0; border-top: 1px solid var(--af-line); border-bottom: 1px solid var(--af-line); margin: 20px 0; }
+.af-empty strong { font-size: 19px; font-weight: 600; }
+.af-empty p { color: var(--af-muted); margin: 10px 0 0; font-size: 14px; }
+[data-testid="stDataFrame"] { border-radius: 6px; }
+@media (max-width: 1180px) {
+  [data-testid="stMainBlockContainer"] { min-width: 0; padding: 2rem 1.4rem; }
+  [data-testid="stHorizontalBlock"] { flex-wrap: wrap; }
+  [data-testid="stHorizontalBlock"] > [data-testid="stColumn"] { min-width: 100% !important; flex: 1 1 100% !important; }
+}
+@media (max-width: 760px) {
+  [data-testid="stMainBlockContainer"] { padding: 1.8rem 1rem; }
+  h1 { font-size: 27px !important; }
+  [data-testid="stMetric"] { min-height: 84px; padding: 8px 0; }
+  [data-testid="stMetricValue"] { font-size: 26px; }
+  [data-baseweb="tab-list"] { gap: 20px; }
+}
+</style>

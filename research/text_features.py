@@ -7,6 +7,7 @@ join and can retain the document ID and model identifier in its trial metadata.
 from __future__ import annotations
 
 import os
+import re
 import time
 from dataclasses import dataclass
 from typing import Any, Callable
@@ -14,6 +15,10 @@ from typing import Any, Callable
 import pandas as pd
 
 FINBERT_MAX_CHARS = 1_200
+FINBERT_FALLBACK_MAX_CHARS = 600
+# FinBERT accepts at most 512 WordPiece tokens. Character count alone is not a
+# sufficient guard: SEC inline-XBRL identifiers can split into many tokens.
+FINBERT_MAX_ESTIMATED_WORDPIECES = 360
 
 
 @dataclass(frozen=True)
@@ -42,6 +47,8 @@ class FinBertFeature:
     positive_probability: float
     negative_probability: float
     neutral_probability: float
+    analyzed_text: str = ""
+    input_char_count: int | None = None
 
 
 def _classification_scores(result: Any) -> dict[str, float]:
@@ -68,17 +75,39 @@ def _retryable_status(error: Exception) -> int | None:
     return status or getattr(error, "status_code", None) or getattr(error, "code", None)
 
 
-def _finbert_input(text: str) -> str:
-    """Keep model input safely within FinBERT's 512-token context window.
+def _wordpiece_cost(fragment: str) -> int:
+    """Conservative local estimate for a BERT-style token budget.
 
-    The provider accepts text, not token IDs. A conservative character cap avoids
-    provider-side tensor errors for long SEC HTML excerpts while retaining words
-    rather than cutting in the middle of one.
+    This deliberately needs no tokenizer download at runtime. Long identifiers
+    and numeric/XBRL fragments are treated as several pieces, which keeps the
+    provider request comfortably below FinBERT's 512-token maximum.
     """
-    clipped = text[:FINBERT_MAX_CHARS]
-    if len(text) <= FINBERT_MAX_CHARS:
-        return clipped
-    return clipped.rsplit(" ", 1)[0] or clipped
+    if not re.search(r"[A-Za-z0-9]", fragment):
+        return 1
+    pieces = re.findall(r"[A-Z]?[a-z]+|[A-Z]+(?![a-z])|\d+", fragment)
+    return max(1, sum(max(1, (len(piece) + 5) // 6) for piece in pieces))
+
+
+def _finbert_input(text: str, *, max_chars: int = FINBERT_MAX_CHARS) -> str:
+    """Bound a normalized provider input by characters and estimated tokens.
+
+    This character limit reduces typical excerpt sizes; it is not an exact token
+    count. Preserve the result alongside the score for review.
+    """
+    normalized = " ".join(text.split())
+    clipped = normalized[:max_chars]
+    if len(normalized) > max_chars:
+        clipped = clipped.rsplit(" ", 1)[0] or clipped
+
+    selected: list[str] = []
+    budget = 0
+    for fragment in re.findall(r"\S+", clipped):
+        cost = _wordpiece_cost(fragment)
+        if selected and budget + cost > FINBERT_MAX_ESTIMATED_WORDPIECES:
+            break
+        selected.append(fragment)
+        budget += cost
+    return " ".join(selected) or clipped[:1]
 
 
 class FinBertExtractor:
@@ -106,20 +135,39 @@ class FinBertExtractor:
         self.client = InferenceClient(provider="hf-inference", api_key=token)
 
     def extract(self, document: TextDocument) -> FinBertFeature:
-        for attempt in range(3):
-            try:
-                result = self.client.text_classification(_finbert_input(document.text), model=self.model)
+        analyzed_text = _finbert_input(document.text)
+        candidates = [analyzed_text]
+        fallback = _finbert_input(document.text, max_chars=FINBERT_FALLBACK_MAX_CHARS)
+        if fallback != analyzed_text:
+            candidates.append(fallback)
+        last_error: Exception | None = None
+        result = None
+        for candidate in candidates:
+            for attempt in range(3):
+                try:
+                    result = self.client.text_classification(candidate, model=self.model)
+                    analyzed_text = candidate
+                    break
+                except Exception as error:
+                    last_error = error
+                    status = _retryable_status(error)
+                    # Some SEC inline-XBRL tokens expand past the model limit even
+                    # after character bounding. Try the safe shorter input once.
+                    if status == 400:
+                        break
+                    if status not in {429, 500, 502, 503, 504}:
+                        raise
+                    if attempt == 2:
+                        raise RuntimeError(
+                            "Hugging Face inference is temporarily unavailable after 3 attempts. "
+                            "Wait a minute and run the document check again."
+                        ) from error
+                    self._sleep(float(2**attempt))
+            if result is not None:
                 break
-            except Exception as error:
-                status = _retryable_status(error)
-                if status not in {429, 500, 502, 503, 504}:
-                    raise
-                if attempt == 2:
-                    raise RuntimeError(
-                        "Hugging Face inference is temporarily unavailable after 3 attempts. "
-                        "Wait a minute and run the document check again."
-                    ) from error
-                self._sleep(float(2**attempt))
+        if result is None:
+            assert last_error is not None
+            raise last_error
         scores = _classification_scores(result)
         sentiment = scores["positive"] - scores["negative"]
         return FinBertFeature(
@@ -132,4 +180,6 @@ class FinBertExtractor:
             positive_probability=scores["positive"],
             negative_probability=scores["negative"],
             neutral_probability=scores["neutral"],
+            analyzed_text=analyzed_text,
+            input_char_count=len(document.text),
         )

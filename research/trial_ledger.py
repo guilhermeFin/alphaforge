@@ -46,12 +46,26 @@ TRIAL_KEYS = (
     "seed",
     "start",
     "symbols",
+    # Portfolio controls are genuine additional variants; leaving them out would
+    # let a user sweep capacity/cost/rebalance assumptions without a trial count.
+    "rebalance_frequency",
+    "max_name_weight",
+    "max_turnover",
+    "target_annual_vol",
+    "spread_bps",
+    "impact_bps",
+    "short_borrow_bps",
+    "max_participation",
+    "adv_lookback",
+    "capital",
 )
 
 # Keys whose values are coerced to a numeric (float) canonical form so that, e.g.,
 # 126 and 126.0 and "126" fingerprint identically. ``seed`` is kept as an int when
 # integral so a seed of 0 vs 0.0 vs "0" all agree.
-_NUMERIC_KEYS = ("lookback", "skip", "cost_bps", "gross", "periods", "seed")
+_NUMERIC_KEYS = ("lookback", "skip", "cost_bps", "gross", "periods", "seed",
+                 "max_name_weight", "max_turnover", "target_annual_vol", "spread_bps",
+                 "impact_bps", "short_borrow_bps", "max_participation", "adv_lookback", "capital")
 
 
 def _canon_symbols(value) -> list:
@@ -124,9 +138,10 @@ def trial_fingerprint(req: dict) -> str:
     """Stable short sha256 fingerprint of a backtest request's *trial identity*.
 
     Two requests share a fingerprint iff they describe the same point in the
-    search space (same provider/factor/lookback/skip/cost/gross/periods/seed/
-    start and the same *set* of symbols). The declared ``n_trials`` is ignored;
-    symbol order and case are ignored; numeric knobs are coerced so 126 == 126.0.
+    search space (same provider/factor/lookback/skip/cost/gross/periods/seed/start,
+    portfolio construction, execution assumptions, and the same *set* of symbols).
+    The declared ``n_trials`` is ignored; symbol order and case are ignored; numeric
+    knobs are coerced so 126 == 126.0.
     """
     canon = _canon_request(req)
     payload = json.dumps(canon, sort_keys=True, separators=(",", ":"), default=str)

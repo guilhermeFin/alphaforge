@@ -23,6 +23,16 @@ def _base_req() -> dict:
         "seed": 7,
         "start": "2010-01-01",
         "symbols": ["AAPL", "MSFT", "GOOG"],
+        "rebalance_frequency": "monthly",
+        "max_name_weight": 0.10,
+        "max_turnover": None,
+        "target_annual_vol": 0.15,
+        "spread_bps": 2.0,
+        "impact_bps": 12.0,
+        "short_borrow_bps": 50.0,
+        "max_participation": 0.05,
+        "adv_lookback": 20,
+        "capital": 1_000_000.0,
         "n_trials": 1,
     }
 
@@ -83,6 +93,16 @@ def test_fingerprint_changes_with_every_trial_knob():
         "seed": 8,
         "start": "2015-06-01",
         "symbols": ["AAPL", "MSFT"],  # different SET, not just order
+        "rebalance_frequency": "weekly",
+        "max_name_weight": 0.15,
+        "max_turnover": 0.50,
+        "target_annual_vol": 0.20,
+        "spread_bps": 5.0,
+        "impact_bps": 25.0,
+        "short_borrow_bps": 100.0,
+        "max_participation": 0.10,
+        "adv_lookback": 40,
+        "capital": 2_000_000.0,
     }
     for key in TRIAL_KEYS:
         req = _base_req()

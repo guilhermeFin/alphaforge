@@ -1,7 +1,7 @@
 import pandas as pd
 import pytest
 
-from research.text_features import FINBERT_MAX_CHARS, FinBertExtractor, TextDocument
+from research.text_features import FINBERT_FALLBACK_MAX_CHARS, FINBERT_MAX_CHARS, FINBERT_MAX_ESTIMATED_WORDPIECES, FinBertExtractor, TextDocument, _wordpiece_cost
 
 
 class FakeFinBertClient:
@@ -43,6 +43,8 @@ def test_finbert_feature_keeps_source_and_availability_metadata():
     assert feature.sentiment == pytest.approx(0.60)
     assert feature.available_at == doc.available_at
     assert feature.document_id == "abc-q1-2024"
+    assert feature.analyzed_text == doc.text
+    assert feature.input_char_count == len(doc.text)
     assert feature.positive_probability + feature.negative_probability + feature.neutral_probability == pytest.approx(1.0)
 
 
@@ -66,9 +68,52 @@ def test_finbert_bounds_long_text_before_the_model_call():
 
     client = CapturingClient()
     document = TextDocument("ABC", pd.Timestamp("2024-05-01"), "SEC 8-K", "doc", "word " * 1_000)
-    FinBertExtractor(client=client).extract(document)
+    feature = FinBertExtractor(client=client).extract(document)
     assert len(client.text) <= FINBERT_MAX_CHARS
     assert client.text.endswith("word")
+    assert feature.analyzed_text == client.text
+    assert feature.input_char_count == len(document.text)
+    assert len(feature.analyzed_text) < feature.input_char_count
+
+
+def test_finbert_bounds_xbrl_like_text_by_estimated_tokens_before_the_model_call():
+    class CapturingClient:
+        def text_classification(self, text, model):
+            self.text = text
+            return [
+                {"label": "positive", "score": 0.70},
+                {"label": "negative", "score": 0.10},
+                {"label": "neutral", "score": 0.20},
+            ]
+
+    client = CapturingClient()
+    xbrl = "us-gaap:AccruedLiabilitiesCurrent 0001045810 iso4217:USD " * 100
+    feature = FinBertExtractor(client=client).extract(TextDocument("ABC", pd.Timestamp("2024-05-01"), "SEC 10-Q", "doc", xbrl))
+    assert sum(_wordpiece_cost(piece) for piece in client.text.split()) <= FINBERT_MAX_ESTIMATED_WORDPIECES
+    assert len(feature.analyzed_text) < FINBERT_MAX_CHARS
+
+
+def test_finbert_retries_token_limit_bad_request_with_safe_shorter_input():
+    class TokenLimitClient:
+        def __init__(self):
+            self.calls = []
+
+        def text_classification(self, text, model):
+            self.calls.append(text)
+            if len(text) > FINBERT_FALLBACK_MAX_CHARS:
+                raise FakeGatewayError(400)
+            return [
+                {"label": "positive", "score": 0.70},
+                {"label": "negative", "score": 0.10},
+                {"label": "neutral", "score": 0.20},
+            ]
+
+    client = TokenLimitClient()
+    xbrl = "us-gaap:AccruedLiabilitiesCurrent 0001045810 iso4217:USD " * 100
+    feature = FinBertExtractor(client=client).extract(TextDocument("ABC", pd.Timestamp("2024-05-01"), "SEC 10-Q", "doc", xbrl))
+    assert len(client.calls) == 2
+    assert len(client.calls[1]) <= FINBERT_FALLBACK_MAX_CHARS
+    assert feature.analyzed_text == client.calls[1]
 
 
 def test_finbert_requires_a_token_when_no_client_is_supplied(monkeypatch):

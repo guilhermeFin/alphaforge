@@ -10,20 +10,29 @@ and serialises results. All honesty guarantees live in research/ and its tests.
 """
 from __future__ import annotations
 
+import os
 from typing import Any
+from dataclasses import replace
 
 import numpy as np
 import pandas as pd
 
-from research import data, factors, factor_lib, fundamentals, signal_quality, stats_guards, overfitting
+from research import (data, event_study, factors, factor_lib, fundamentals, signal_quality,
+                      stats_guards, overfitting, metrics, portfolio, validation, reproducibility, paper,
+                      statistical_rigor, evidence, robustness_matrix, factor_diagnostics)
+from research import licensed_data
+from research import model_time_integrity, research_validity
 from research.macro import FredAlfredProvider
 from research.providers import SecEdgarProvider
 from research.sec_documents import SUPPORTED_FORMS, SecDocumentProvider
 from research.text_features import FinBertExtractor, TextDocument
 from research.backtest import backtest
+from research.execution import ExecutionModel
 from research.walkforward import split_backtest, walk_forward
 from research.trial_ledger import TrialLedger
 from research.attribution import compact_attribution
+from research.strategy_report import build_strategy_report
+from research.microstructure import MicrostructureError, run_microstructure_study
 
 DISCLAIMER = (
     "AlphaForge is research software, not investment advice. Backtests are "
@@ -112,7 +121,7 @@ FACTORLIB_SPECS = {
     "conservative_compounder": ("conservative_compounder", +1),
 }
 FUNDAMENTAL_FACTORS = LEGACY_FUNDAMENTAL + tuple(FACTORLIB_SPECS.keys())
-PROVIDERS = ("synthetic", "yfinance")
+PROVIDERS = ("synthetic", "yfinance", "licensed_bundle")
 
 # hard input bounds — the service refuses absurd requests instead of hanging
 MAX_SYMBOLS = 50
@@ -122,6 +131,49 @@ MAX_TICKER_LEN = 10
 
 class WorkflowError(ValueError):
     """User-facing input/validation error (maps to HTTP 400)."""
+
+
+def run_microstructure_lab(req: dict) -> dict:
+    """Run the fixed first market-microstructure hypothesis.
+
+    This accepts a bounded, normalized event payload rather than a file path so
+    the API cannot read arbitrary local files.  Large raw archives stay local and
+    are processed through the Streamlit upload workflow.
+    """
+    source = str(req.get("source", "synthetic")).strip().lower()
+    if source not in {"synthetic", "binance_events"}:
+        raise WorkflowError("source must be synthetic or binance_events")
+    try:
+        seed = int(req.get("seed", 42))
+        window = int(req.get("window_events", 32))
+        horizon = int(req.get("horizon_events", 30))
+        fee = float(req.get("maker_fee_bps", 1.0))
+        latency = int(req.get("latency_events", 2))
+        inventory = int(req.get("max_inventory", 8))
+    except (TypeError, ValueError) as error:
+        raise WorkflowError("microstructure settings must be numeric") from error
+    if not (0 <= seed <= 2_147_483_647):
+        raise WorkflowError("seed must be a non-negative 32-bit integer")
+    if not (8 <= window <= 500 and 5 <= horizon <= 500 and horizon < window * 10):
+        raise WorkflowError("window_events must be 8-500 and horizon_events must be 5-500")
+    if not (0.0 <= fee <= 100.0 and 0 <= latency <= 100 and 1 <= inventory <= 100):
+        raise WorkflowError("fee, latency, or inventory setting is outside the supported research bounds")
+    records = req.get("events")
+    if source == "binance_events":
+        if not isinstance(records, list) or not (120 <= len(records) <= 20_000):
+            raise WorkflowError("binance_events needs between 120 and 20,000 normalized trade events")
+        events = pd.DataFrame(records)
+    elif records:
+        raise WorkflowError("events are accepted only with source=binance_events")
+    else:
+        events = None
+    try:
+        return run_microstructure_study(
+            events, source=source, seed=seed, window=window, horizon_events=horizon,
+            maker_fee_bps=fee, latency_events=latency, max_inventory=inventory,
+        )
+    except MicrostructureError as error:
+        raise WorkflowError(str(error)) from error
 
 
 def _validate(req: dict) -> dict:
@@ -135,9 +187,9 @@ def _validate(req: dict) -> dict:
 
     symbols = req.get("symbols") or []
     symbols = [str(s).strip().upper() for s in symbols if str(s).strip()]
-    if provider == "yfinance":
+    if provider in {"yfinance", "licensed_bundle"}:
         if len(symbols) < 2:
-            raise WorkflowError("yfinance provider needs at least 2 ticker symbols "
+            raise WorkflowError(f"{provider} provider needs at least 2 ticker symbols "
                                 "(this is a cross-sectional long/short strategy)")
         bad = [s for s in symbols if len(s) > MAX_TICKER_LEN or not s.replace(".", "").replace("-", "").isalnum()]
         if bad:
@@ -211,14 +263,14 @@ def _score(close: pd.DataFrame, factor: str, lookback: int, skip: int) -> pd.Dat
     )
 
 
-def _compute_pbo(close: pd.DataFrame, p: dict) -> dict:
+def _compute_pbo(close: pd.DataFrame, p: dict) -> tuple[dict, pd.DataFrame | None]:
     """Probability of Backtest Overfitting via CSCV over a small lookback grid —
     the configs a user would realistically sweep. Technical factors only in this
     MVP (the fundamental scoring path differs). Always returns a dict; on any
     failure (short series, degenerate grid) it reports an honest n/a, never raises.
     """
     if p["factor"] in FUNDAMENTAL_FACTORS:
-        return {"error": "PBO grid not wired for fundamental factors yet"}
+        return {"error": "PBO grid not wired for fundamental factors yet"}, None
     lb, sk, factor, gross = p["lookback"], p["skip"], p["factor"], p["gross"]
 
     # Build the grid in EFFECTIVE-lookback space. _score caps the lookback inside
@@ -233,17 +285,39 @@ def _compute_pbo(close: pd.DataFrame, p: dict) -> dict:
                    for f in (0.4, 0.6, 0.8, 1.0, 1.3)})
     param_grid = [{"lookback": g} for g in grid]
     if len(param_grid) < 2:
-        return {"error": "PBO grid degenerate for this factor (fewer than 2 distinct configs)"}
+        return {"error": "PBO grid degenerate for this factor (fewer than 2 distinct configs)"}, None
 
     def weight_fn(c, lookback):
         return factors.long_short_weights(
             _score(c, factor, lookback, min(sk, lookback - 1)), gross=gross)
 
     try:
-        return overfitting.pbo_from_factor_grid(
-            close, weight_fn, param_grid, cost_bps=p["cost_bps"], n_splits=8)
+        matrix = overfitting.candidate_returns_from_factor_grid(
+            close, weight_fn, param_grid, cost_bps=p["cost_bps"])
+        cpcv = statistical_rigor.purged_cpcv_pbo(
+            matrix, n_splits=8, purge_periods=1, embargo_periods=1)
+        counts, edges = np.histogram(cpcv.logits, bins=20) if cpcv.logits else (np.array([]), np.array([]))
+        pbo = {
+            "pbo": cpcv.pbo,
+            "n_strategies": cpcv.n_strategies,
+            "n_combinations": cpcv.n_combinations,
+            "median_oos_sharpe_selected": cpcv.median_oos_sharpe_selected,
+            "histogram": {"edges": edges.tolist(), "counts": counts.tolist()},
+            "insufficient": cpcv.insufficient,
+            "overfit": bool(np.isfinite(cpcv.pbo) and cpcv.pbo > 0.5),
+            "verdict": (
+                "insufficient data — purged CPCV PBO not estimable" if cpcv.insufficient else
+                "OVERFIT: the in-sample winner is more likely than not to be below-median out-of-sample" if cpcv.pbo > 0.5 else
+                "elevated overfitting risk — treat the selected configuration with caution" if cpcv.pbo > 0.25 else
+                "low overfitting risk for this parameter search"
+            ),
+            "note": cpcv.note,
+            "purge_periods": cpcv.purge_periods,
+            "embargo_periods": cpcv.embargo_periods,
+        }
+        return pbo, matrix
     except Exception as e:  # noqa: BLE001 - honest n/a beats a crashed workflow
-        return {"error": f"{type(e).__name__}: {e}"}
+        return {"error": f"{type(e).__name__}: {e}"}, None
 
 
 def _jsonable(obj: Any) -> Any:
@@ -272,6 +346,8 @@ PILOT_MAX_SYMBOLS = 5
 PILOT_MAX_MACRO_SERIES = 5
 PILOT_MAX_DOCUMENT_CHARS = 12_000
 DOCUMENT_BATCH_MAX_PER_SYMBOL = 2
+DOCUMENT_BATCH_MAX_SYMBOLS = 25
+DOCUMENT_BATCH_MAX_DOCUMENTS = 50
 
 
 def _pilot_symbols(values: list[str] | None) -> list[str]:
@@ -280,6 +356,19 @@ def _pilot_symbols(values: list[str] | None) -> list[str]:
         raise WorkflowError(f"public-data pilot accepts 1 to {PILOT_MAX_SYMBOLS} tickers")
     if len(set(symbols)) != len(symbols):
         raise WorkflowError("public-data pilot tickers must be unique")
+    bad = [symbol for symbol in symbols if len(symbol) > MAX_TICKER_LEN or not symbol.replace(".", "").replace("-", "").isalnum()]
+    if bad:
+        raise WorkflowError(f"invalid ticker(s): {bad}")
+    return symbols
+
+
+def _document_symbols(values: list[str] | None) -> list[str]:
+    """Validate the broader, bounded validation sample separately from the pilot."""
+    symbols = [str(value).strip().upper() for value in (values or PILOT_DEFAULT_SYMBOLS) if str(value).strip()]
+    if not (1 <= len(symbols) <= DOCUMENT_BATCH_MAX_SYMBOLS):
+        raise WorkflowError(f"filing research accepts 1 to {DOCUMENT_BATCH_MAX_SYMBOLS} tickers")
+    if len(set(symbols)) != len(symbols):
+        raise WorkflowError("filing research tickers must be unique")
     bad = [symbol for symbol in symbols if len(symbol) > MAX_TICKER_LEN or not symbol.replace(".", "").replace("-", "").isalnum()]
     if bad:
         raise WorkflowError(f"invalid ticker(s): {bad}")
@@ -312,7 +401,7 @@ def run_real_document_batch(
     This is a provenance step only. It retrieves documents filed by a declared
     cutoff, preserves each filing date, and does not create a trading result.
     """
-    symbols = _pilot_symbols(req.get("symbols"))
+    symbols = _document_symbols(req.get("symbols"))
     forms = {str(value).strip().upper() for value in req.get("forms", ["8-K"]) if str(value).strip()}
     if not forms or not forms.issubset(SUPPORTED_FORMS):
         raise WorkflowError(f"document batch forms must be selected from {sorted(SUPPORTED_FORMS)}")
@@ -323,6 +412,8 @@ def run_real_document_batch(
     per_symbol = int(req.get("per_symbol", 1))
     if not 1 <= per_symbol <= DOCUMENT_BATCH_MAX_PER_SYMBOL:
         raise WorkflowError(f"document batch accepts 1 to {DOCUMENT_BATCH_MAX_PER_SYMBOL} filings per ticker")
+    if len(symbols) * per_symbol > DOCUMENT_BATCH_MAX_DOCUMENTS:
+        raise WorkflowError(f"filing research is limited to {DOCUMENT_BATCH_MAX_DOCUMENTS} documents per run")
 
     provider = document_provider or SecDocumentProvider()
     documents, warnings = provider.documents(symbols, forms, as_of, per_symbol)
@@ -332,19 +423,94 @@ def run_real_document_batch(
     extractor = text_extractor or FinBertExtractor()
     features = []
     for document in documents:
-        feature = extractor.extract(document.as_text_document())
+        text_document = document.as_text_document()
+        selected = document.passages
+        try:
+            scored = [extractor.extract(replace(text_document, text=passage.text)) for passage in selected] if selected else [extractor.extract(text_document)]
+        except Exception as error:
+            warnings.append(f"{document.symbol}: classification unavailable for {document.accession_number} ({type(error).__name__}); no score substituted.")
+            continue
+        feature = scored[0]
+        # Use the captured model input, never reconstruct it from today's clipping rule.
+        analyzed_text = "\n\n".join(item.analyzed_text for item in scored)
+        input_chars = sum(item.input_char_count or 0 for item in scored)
+        review = None
+        if analyzed_text and feature.input_char_count is not None:
+            review = {
+                "analyzed_text": analyzed_text,
+                "retrieved_excerpt": document.text,
+                "input_char_count": input_chars,
+                "analyzed_char_count": sum(len(item.analyzed_text) for item in scored),
+                "model_input_shortened": any(len(item.analyzed_text) < (item.input_char_count or 0) for item in scored),
+                "source_text_chars": document.source_text_chars,
+                "excerpt_start_char": document.excerpt_start_char,
+                "section_end_char": document.section_end_char,
+                "selection": {
+                    "method": document.selection_method,
+                    "label": document.selection_label,
+                    "quality_score": document.selection_quality_score,
+                    "quality_note": document.selection_quality_note,
+                },
+                "passages": [{
+                    "section": selected[index].section if selected else document.selection_label,
+                    "analyzed_text": item.analyzed_text,
+                    "retrieved_text": selected[index].text if selected else document.text,
+                    "input_char_count": item.input_char_count,
+                    "sentiment": item.sentiment,
+                    "positive_probability": item.positive_probability,
+                    "negative_probability": item.negative_probability,
+                    "neutral_probability": item.neutral_probability,
+                } for index, item in enumerate(scored)],
+            }
         features.append({
             "symbol": feature.symbol,
             "available_at": feature.available_at,
             "form": document.form,
             "document_id": feature.document_id,
             "source_url": document.url,
+            "filing_url": document.filing_url or document.url,
+            "content_kind": document.content_kind,
+            "selection_note": document.selection_note,
+            "selection_method": document.selection_method,
+            "selection_label": document.selection_label,
+            "selection_quality_score": document.selection_quality_score,
+            "selection_quality_note": document.selection_quality_note,
+            "extraction_version": (
+                document.selection_method if document.content_kind == "mda_excerpt"
+                else document.extraction_version
+            ),
+            "passage_count": len(scored),
             "model": feature.model,
-            "sentiment": feature.sentiment,
-            "positive_probability": feature.positive_probability,
-            "negative_probability": feature.negative_probability,
-            "neutral_probability": feature.neutral_probability,
+            "sentiment": float(np.mean([item.sentiment for item in scored])),
+            "positive_probability": float(np.mean([item.positive_probability for item in scored])),
+            "negative_probability": float(np.mean([item.negative_probability for item in scored])),
+            "neutral_probability": float(np.mean([item.neutral_probability for item in scored])),
+            "review": review,
         })
+    if not features:
+        raise WorkflowError("No documents could be classified. Check Hugging Face access and retry. " + " ".join(warnings))
+    # Was the scoring model itself usable when each document appeared?  Document
+    # provenance alone does not answer that question.
+    policy = model_time_integrity.TimeIntegrityPolicy.from_request(req.get("time_integrity"))
+    time_integrity = model_time_integrity.time_integrity_audit(features, policy=policy)
+    by_document = {row["document_id"]: row for row in time_integrity["observations"]}
+    for item in features:
+        verdict = by_document.get(item["document_id"])
+        if verdict:
+            item["time_integrity"] = {
+                key: verdict[key] for key in
+                ("status", "status_label", "training_overlap_risk", "reason", "included_in_primary")
+            }
+    source_validation = {
+        "requested_tickers": len(symbols),
+        "requested_documents": len(symbols) * per_symbol,
+        "classified_documents": len(features),
+        "earnings_releases": sum(item["content_kind"] == "earnings_release" for item in features),
+        "mda_excerpts": sum(item["content_kind"] == "mda_excerpt" for item in features),
+        "filing_excerpts": sum(item["content_kind"] == "filing_excerpt" for item in features),
+        "warnings": len(warnings),
+        "coverage_rate": len(features) / (len(symbols) * per_symbol),
+    }
     return _jsonable({
         "symbols": symbols,
         "as_of": as_of,
@@ -352,8 +518,147 @@ def run_real_document_batch(
         "filings_requested": per_symbol,
         "features": features,
         "warnings": warnings,
-        "note": "Real SEC filing excerpts classified with filing-date provenance; not a trading result.",
+        "source_validation": source_validation,
+        "time_integrity": time_integrity,
+        "note": "SEC source documents classified with filing-date provenance; not a trading result.",
     })
+
+
+def _event_price_panel(symbols: list[str], start: pd.Timestamp, end: pd.Timestamp, benchmark: str) -> tuple[pd.DataFrame, pd.Series]:
+    """Fetch adjusted closes only for the bounded filing-study window."""
+    wanted = list(dict.fromkeys([*symbols, benchmark]))
+    try:
+        panel = data.get_panel(wanted, start=str(start.date()), end=str(end.date()), provider="yfinance")
+    except ImportError as error:
+        raise WorkflowError("Event studies need market-price support. Install it with `pip install alphaforge[data]`.") from error
+    close = panel.close
+    if benchmark not in close:
+        raise WorkflowError(f"Benchmark {benchmark} did not return adjusted close prices.")
+    return close.drop(columns=[benchmark], errors="ignore"), close[benchmark]
+
+
+def run_filing_event_study(req: dict, *, price_loader: Any | None = None) -> dict:
+    """Evaluate dated text features against post-filing abnormal returns.
+
+    The result is an explanatory event study with a chronological holdout, not a
+    portfolio backtest. Filing dates have no publication time, so every event enters
+    on the next available trading session.
+    """
+    rows = req.get("features") or []
+    if not (1 <= len(rows) <= DOCUMENT_BATCH_MAX_DOCUMENTS):
+        raise WorkflowError(f"event study accepts 1 to {DOCUMENT_BATCH_MAX_DOCUMENTS} scored documents")
+    try:
+        horizon = int(req.get("horizon", 5))
+    except (TypeError, ValueError) as error:
+        raise WorkflowError("event-study horizon must be a whole number of trading days") from error
+    if not 1 <= horizon <= 21:
+        raise WorkflowError("event-study horizon must be in [1, 21] trading days")
+    benchmark = str(req.get("benchmark", "SPY")).upper().strip()
+    if not benchmark or len(benchmark) > MAX_TICKER_LEN:
+        raise WorkflowError("event-study benchmark must be a valid ticker")
+    events: list[event_study.FilingEvent] = []
+    audit_rows: list[dict] = []
+    for row in rows:
+        try:
+            symbol = str(row["symbol"]).upper().strip()
+            available_at = pd.Timestamp(row["available_at"])
+            sentiment = float(row["sentiment"])
+            document_id = str(row["document_id"])
+        except (KeyError, TypeError, ValueError) as error:
+            raise WorkflowError("each event-study document needs symbol, available_at, sentiment, and document_id") from error
+        if not symbol or not document_id or not np.isfinite(sentiment) or pd.isna(available_at):
+            raise WorkflowError("event-study documents contain invalid provenance or sentiment")
+        events.append(event_study.FilingEvent(symbol, available_at, sentiment, document_id))
+        # A legacy record with no model field resolves to missing metadata; it is
+        # never silently treated as if the model had been available.
+        audit_rows.append({
+            "symbol": symbol, "available_at": available_at, "document_id": document_id,
+            "model": str(row.get("model") or "").strip(),
+        })
+    policy = model_time_integrity.TimeIntegrityPolicy.from_request(req.get("time_integrity"))
+    time_integrity = model_time_integrity.time_integrity_audit(audit_rows, policy=policy)
+    primary_ids = {row["document_id"] for row in time_integrity["observations"] if row["included_in_primary"]}
+
+    first = min(event.available_at for event in events).normalize() - pd.Timedelta(days=10)
+    last = max(event.available_at for event in events).normalize() + pd.Timedelta(days=horizon + 35)
+    loader = price_loader or _event_price_panel
+    close, market = loader(sorted({event.symbol for event in events}), first, last, benchmark)
+    observed, warnings = event_study.build_event_returns(events, close, market, horizon=horizon)
+    eligible_observed = (
+        observed[observed["document_id"].isin(primary_ids)].reset_index(drop=True)
+        if not observed.empty else observed
+    )
+
+    if eligible_observed.empty and not observed.empty:
+        counts = time_integrity["counts"]
+        causes = [
+            (counts["historically_unavailable_model_observations"],
+             "predate the scoring model's availability date"),
+            (counts["missing_model_metadata_observations"], "carry no model metadata"),
+            (counts["training_overlap_risk_observations"] if policy.exclude_training_overlap else 0,
+             "carry training-data overlap risk under the selected policy"),
+        ]
+        reasons = [f"{count} {label}" for count, label in causes if count]
+        outcome = {
+            "status": "insufficient_data",
+            "message": (
+                "No observation survived the model-time integrity screen, so there is no primary "
+                "evidence cohort: " + "; ".join(reasons) + "."
+            ),
+            "n_events": 0,
+            "horizon": horizon,
+        }
+    else:
+        outcome = event_study.evaluate_sentiment(eligible_observed, horizon=horizon)
+
+    # A descriptive all-observations view, kept strictly separate so the headline
+    # verdict is never a blend of deployable and non-deployable observations.
+    all_view = event_study.evaluate_sentiment(observed, horizon=horizon) if not observed.empty else {
+        "status": "insufficient_data", "message": "No usable events.", "n_events": 0, "horizon": horizon,
+    }
+    all_view.pop("verdict", None)
+    all_view.pop("evidence_established", None)
+    all_view.update({
+        "usable_events": int(len(observed)),
+        "label": "All observations (descriptive only)",
+        "note": (
+            "Descriptive view over every scored document, including observations the model-time "
+            "screen excluded. It is not evidence of a historically deployable result and must not be "
+            "reported as the study's conclusion."
+        ),
+    })
+
+    # Data health for the cohort that produces the headline, so a degenerate
+    # sample cannot read as a normal completed study.
+    validity = research_validity.research_validity_summary(
+        eligible_observed["abnormal_return"] if not eligible_observed.empty else [],
+        signal=eligible_observed["sentiment"] if not eligible_observed.empty else None,
+    )
+
+    excluded = int(len(observed) - len(eligible_observed))
+    outcome.update({
+        "research_validity": validity,
+        "benchmark": benchmark,
+        "requested_documents": len(events),
+        "usable_events": int(len(eligible_observed)),
+        "cohort": "model-time eligible",
+        "all_observations_view": all_view,
+        "time_integrity": time_integrity,
+        "cohort_coverage": {
+            "events_with_prices": int(len(observed)),
+            "primary_cohort_events": int(len(eligible_observed)),
+            "excluded_events": excluded,
+            "primary_cohort_share": (len(eligible_observed) / len(observed)) if len(observed) else 0.0,
+        },
+        "warnings": warnings,
+        "note": (
+            "Date-only filing availability enters on the next trading session. This is an explanatory "
+            "event study, not a trading result. The headline result covers only observations whose "
+            f"scoring model was already available; {excluded} of {len(observed)} priced observations "
+            "were held out of it."
+        ),
+    })
+    return _jsonable(outcome)
 
 
 def run_public_data_pilot(
@@ -459,6 +764,10 @@ def run_public_data_pilot(
     text_result = None
     if text_doc:
         feature = (text_extractor or FinBertExtractor()).extract(text_doc)
+        # The pilot certifies nothing, but a score still has to carry the
+        # provenance of the model that produced it.
+        profile = model_time_integrity.resolve_profile(feature.model)
+        verdict = model_time_integrity.classify_observation(feature.available_at, profile)
         text_result = {
             "symbol": feature.symbol,
             "available_at": feature.available_at,
@@ -469,6 +778,17 @@ def run_public_data_pilot(
             "positive_probability": feature.positive_probability,
             "negative_probability": feature.negative_probability,
             "neutral_probability": feature.neutral_probability,
+            "model_time_integrity": {
+                "status": verdict.status,
+                "status_label": model_time_integrity.STATUS_LABELS.get(verdict.status, verdict.status),
+                "training_overlap_risk": verdict.training_overlap_risk,
+                "reason": verdict.reason,
+                "model_metadata": profile.to_dict(),
+                "note": (
+                    "Recorded for provenance only. The pilot validates metadata and makes no "
+                    "deployability claim either way, so no observation is admitted or excluded here."
+                ),
+            },
         }
 
     return _jsonable({
@@ -500,6 +820,96 @@ def _downsample_curve(s: pd.Series, max_points: int = 500) -> list[dict]:
             for idx, v in sub.items()]
 
 
+def _prepare_strategy_inputs(p: dict) -> tuple[pd.DataFrame, pd.DataFrame | None, pd.DataFrame, Any]:
+    """Load one point-in-time-safe panel and its factor score.
+
+    Both Strategy Lab and Portfolio Lab use this exact preparation path.  That
+    prevents a portfolio feature from quietly using different data or factor
+    maths than the backtest it is meant to extend.
+    """
+    fund_for_attr = None
+    if p["factor"] in FUNDAMENTAL_FACTORS:
+        if p["provider"] == "synthetic":
+            syms = p["symbols"] or [f"S{i:02d}" for i in range(20)]
+            world = data.make_synthetic_world(syms, start=p["start"], periods=p["periods"],
+                                              seed=p["seed"], quality_to_drift=0.0016)
+            close, volume = world.close, world.volume
+            if len(close) < 400:
+                raise WorkflowError("fundamental factors need >= 400 days (several quarters + OOS)")
+            if p["factor"] in LEGACY_FUNDAMENTAL:
+                obs = data.make_synthetic_fundamentals(world, seed=p["seed"])
+                fund = fundamentals.build_fundamentals(obs, close.index, list(close.columns))
+                if p["factor"] == "value":
+                    score = fundamentals.value_score(fund, close)
+                elif p["factor"] == "quality":
+                    score = fundamentals.quality_score(fund, close)
+                else:
+                    score = fundamentals.value_quality_score(fund, close)
+                fund_for_attr = fundamentals.build_fundamentals(
+                    data.make_synthetic_raw_fundamentals(world, seed=p["seed"]),
+                    close.index, list(close.columns))
+            else:
+                obs = data.make_synthetic_raw_fundamentals(world, seed=p["seed"])
+                fund = fundamentals.build_fundamentals(obs, close.index, list(close.columns))
+                fn_name, sign = FACTORLIB_SPECS[p["factor"]]
+                raw = getattr(factor_lib, fn_name)(fund, close)
+                score = factors.cross_sectional_zscore(raw if sign > 0 else -raw)
+                fund_for_attr = fund
+        elif p["provider"] == "licensed_bundle":
+            try:
+                panel = data.get_panel(p["symbols"], start=p["start"], provider="licensed_bundle")
+                close = panel.close.dropna(how="all", axis=1)
+                volume = panel.volume.reindex_like(close)
+                if close.shape[1] < 2:
+                    raise WorkflowError("need at least 2 eligible symbols with licensed price history")
+                if len(close) < 400:
+                    raise WorkflowError("fundamental factors need >= 400 days (several quarters + OOS)")
+                obs = licensed_data.load_fundamentals(list(close.columns), start=p["start"])
+            except licensed_data.LicensedDataError as error:
+                raise WorkflowError(str(error)) from error
+            fund = fundamentals.build_fundamentals(obs, close.index, list(close.columns))
+            if p["factor"] == "value":
+                raw = factor_lib.value_score(fund, close)
+            elif p["factor"] == "quality":
+                raw = factor_lib.quality_score(fund, close)
+            elif p["factor"] == "value_quality":
+                raw = factors.blend(factor_lib.value_score(fund, close), factor_lib.quality_score(fund, close))
+            else:
+                fn_name, sign = FACTORLIB_SPECS[p["factor"]]
+                raw = getattr(factor_lib, fn_name)(fund, close)
+                raw = raw if sign > 0 else -raw
+            score = factors.cross_sectional_zscore(raw)
+            if not score.notna().any().any():
+                raise WorkflowError("Licensed fundamentals do not cover the fields required by this factor.")
+            fund_for_attr = fund
+        else:
+            raise WorkflowError(
+                "Fundamental factors require either synthetic data or a licensed bundle with filing-dated fundamentals. "
+                "Yahoo Finance does not provide the needed point-in-time history."
+            )
+    else:
+        if p["provider"] == "synthetic":
+            panel = data.get_panel(
+                p["symbols"] or [f"S{i:02d}" for i in range(15)], provider="synthetic",
+                start=p["start"], periods=p["periods"], seed=p["seed"],
+            )
+        else:
+            try:
+                panel = data.get_panel(p["symbols"], start=p["start"], provider=p["provider"])
+            except licensed_data.LicensedDataError as error:
+                raise WorkflowError(str(error)) from error
+        close = panel.close.dropna(how="all", axis=1)
+        volume = panel.volume.reindex_like(close)
+        if close.shape[1] < 2:
+            raise WorkflowError("need at least 2 symbols with data for a cross-sectional strategy")
+        if len(close) < MIN_PERIODS:
+            raise WorkflowError(f"only {len(close)} usable days of data (need >= {MIN_PERIODS})")
+        if len(close) <= p["lookback"] + p["skip"] + 21:
+            raise WorkflowError("lookback too long for the data window")
+        score = _score(close, p["factor"], p["lookback"], p["skip"])
+    return close, volume, score, fund_for_attr
+
+
 def run_backtest_workflow(req: dict, ledger: "TrialLedger | None" = None) -> dict:
     """Validate -> load data -> factor -> honest backtest -> full verdict dict.
 
@@ -509,63 +919,7 @@ def run_backtest_workflow(req: dict, ledger: "TrialLedger | None" = None) -> dic
     used to under-deflate). No ledger => stateless, declared n_trials used as-is.
     """
     p = _validate(req)
-    fund_for_attr = None  # raw-field bundle for factor attribution (synthetic fundamentals only)
-
-    if p["factor"] in FUNDAMENTAL_FACTORS:
-        # Fundamental factors need point-in-time fundamentals. Free vendors serve
-        # RESTATED numbers (look-ahead), so the only honest path today is the
-        # synthetic world; real PIT data plugs into the same interface later.
-        if p["provider"] != "synthetic":
-            raise WorkflowError(
-                "value/quality factors require the 'synthetic' provider in this MVP — "
-                "free point-in-time fundamentals are not wired yet, and using restated "
-                "free data would reintroduce the look-ahead this tool refuses to allow")
-        syms = p["symbols"] or [f"S{i:02d}" for i in range(20)]
-        world = data.make_synthetic_world(syms, start=p["start"], periods=p["periods"],
-                                          seed=p["seed"], quality_to_drift=0.0016)
-        close = world.close
-        if len(close) < 400:
-            raise WorkflowError("fundamental factors need >= 400 days (several quarters + OOS)")
-        if p["factor"] in LEGACY_FUNDAMENTAL:
-            # Composite value/quality scores from the ratio-metric generator.
-            obs = data.make_synthetic_fundamentals(world, seed=p["seed"])
-            fund = fundamentals.build_fundamentals(obs, close.index, list(close.columns))
-            if p["factor"] == "value":
-                score = fundamentals.value_score(fund, close)
-            elif p["factor"] == "quality":
-                score = fundamentals.quality_score(fund, close)
-            else:
-                score = fundamentals.value_quality_score(fund, close)
-            # attribution needs RAW-field factor portfolios; build them from the same world
-            fund_for_attr = fundamentals.build_fundamentals(
-                data.make_synthetic_raw_fundamentals(world, seed=p["seed"]),
-                close.index, list(close.columns))
-        else:
-            # Single-factor library factors run on the RAW canonical fields; the
-            # sign flips "lower is better" signals so the rank points the right way.
-            obs = data.make_synthetic_raw_fundamentals(world, seed=p["seed"])
-            fund = fundamentals.build_fundamentals(obs, close.index, list(close.columns))
-            fn_name, sign = FACTORLIB_SPECS[p["factor"]]
-            raw = getattr(factor_lib, fn_name)(fund, close)
-            score = factors.cross_sectional_zscore(raw if sign > 0 else -raw)
-            fund_for_attr = fund  # already the raw-field bundle
-    else:
-        if p["provider"] == "synthetic":
-            panel = data.get_panel(
-                p["symbols"] or [f"S{i:02d}" for i in range(15)],
-                provider="synthetic", start=p["start"],
-                periods=p["periods"], seed=p["seed"],
-            )
-        else:
-            panel = data.get_panel(p["symbols"], start=p["start"], provider="yfinance")
-        close = panel.close.dropna(how="all", axis=1)
-        if close.shape[1] < 2:
-            raise WorkflowError("need at least 2 symbols with data for a cross-sectional strategy")
-        if len(close) < MIN_PERIODS:
-            raise WorkflowError(f"only {len(close)} usable days of data (need >= {MIN_PERIODS})")
-        if len(close) <= p["lookback"] + p["skip"] + 21:
-            raise WorkflowError("lookback too long for the data window")
-        score = _score(close, p["factor"], p["lookback"], p["skip"])
+    close, _volume, score, fund_for_attr = _prepare_strategy_inputs(p)
 
     weights = factors.long_short_weights(score, gross=p["gross"])
     res = backtest(close, weights, cost_bps=p["cost_bps"])
@@ -604,8 +958,34 @@ def run_backtest_workflow(req: dict, ledger: "TrialLedger | None" = None) -> dic
     except ValueError as e:
         wf = {"error": str(e)}
 
-    pbo = _compute_pbo(close, p)  # CSCV Probability of Backtest Overfitting
+    pbo, candidate_returns = _compute_pbo(close, p)  # CSCV + CPCV search diagnostics
     tails = stats_guards.fat_tail_report(res.returns)
+    # Stress the unchanged, point-in-time signal. These are deliberately ordinary
+    # frictions (worse costs and slower fills), not another optimized search.
+    stress = robustness_matrix.cost_delay_matrix(close, weights, base_cost_bps=p["cost_bps"])
+    factor_health = factor_diagnostics.factor_health(score, close)
+    bundle_status = licensed_data.bundle_status() if p["provider"] == "licensed_bundle" else None
+    data_audit = evidence.data_integrity_audit(p["provider"], close, p["symbols"], bundle_status)
+
+    try:
+        ic_values = signal_quality.ic_series(score, close)
+        benchmark_returns = close.pct_change(fill_method=None).mean(axis=1).fillna(0.0)
+        strategy_report = build_strategy_report(
+            res.returns, positions=res.positions, benchmark_returns=benchmark_returns,
+            candidate_returns=candidate_returns, ic_values=ic_values, signal=score, metadata={
+                "factor": p["factor"], "provider": p["provider"],
+                "benchmark_label": "Equal-weight selected universe (benchmark proxy, not SPY)",
+            },
+        )
+        if candidate_returns is not None:
+            strategy_report["inputs"]["has_candidate_matrix"] = True
+            strategy_report["statistical_rigor"]["cpcv_pbo"] = pbo
+            strategy_report["statistical_rigor"]["white_reality_check"] = {
+                "computed": False,
+                "note": "White's Reality Check is available for this parameter grid in the deep report.",
+            }
+    except Exception as e:  # report diagnostics must not block a valid backtest
+        strategy_report = {"error": f"{type(e).__name__}: {e}"}
 
     # Factor-model attribution: how much of the strategy's return is just FF/Carhart
     # factor beta vs. genuine idiosyncratic alpha. Full FF5 when synthetic fundamentals
@@ -634,34 +1014,227 @@ def run_backtest_workflow(req: dict, ledger: "TrialLedger | None" = None) -> dic
         if credible
         else f"NOT CREDIBLE: does not survive the {basis} bar"
     )
+    decision_evidence = evidence.evidence_card(
+        data_audit=data_audit, scorecard=scorecard, signal_quality=sigq,
+        out_of_sample=oos, walk_forward=wf, pbo=pbo, robustness=stress,
+    )
 
     dd = (res.equity / res.equity.cummax() - 1.0)
+    meta = {
+        **p,
+        "n_trials": eff_trials,
+        "declared_n_trials": declared_trials,
+        "effective_lookback": (None if p["factor"] in FUNDAMENTAL_FACTORS else _effective_lookback(p["factor"], p["lookback"])),
+        "n_symbols": int(close.shape[1]), "n_days": int(len(close)),
+        "start_date": str(close.index[0].date()), "end_date": str(close.index[-1].date()),
+        "engine_version": "0.0.1", "disclaimer": DISCLAIMER,
+    }
+    manifest = reproducibility.build_manifest(
+        request=req, meta=meta, close=close, positions=res.positions, scorecard=scorecard,
+        engine_version=meta["engine_version"],
+    )
     return _jsonable({
-        "meta": {
-            **p,
-            "n_trials": eff_trials,  # ENFORCED count (>= declared) so the verdict caption is honest
-            "declared_n_trials": declared_trials,  # what the user submitted (always present)
-            "effective_lookback": (None if p["factor"] in FUNDAMENTAL_FACTORS
-                                   else _effective_lookback(p["factor"], p["lookback"])),
-            "n_symbols": int(close.shape[1]),
-            "n_days": int(len(close)),
-            "start_date": str(close.index[0].date()),
-            "end_date": str(close.index[-1].date()),
-            "engine_version": "0.0.1",
-            "disclaimer": DISCLAIMER,
-        },
+        "meta": meta,
         "verdict": verdict,
         "verdict_basis": basis,
         "scorecard": scorecard,
         "signal_quality": sigq,
+        "factor_health": factor_health,
+        "data_audit": data_audit,
+        "robustness_matrix": stress,
+        "evidence_card": decision_evidence,
+        "manifest": manifest,
         "out_of_sample": oos,
         "walk_forward": wf,
         "pbo": pbo,
+        "strategy_report": strategy_report,
+        "temporal_stability": strategy_report.get("temporal_stability") if isinstance(strategy_report, dict) else None,
         "trial_audit": trial_audit,
         "attribution": attribution,
         "fat_tails": tails,
         "equity_curve": _downsample_curve(res.equity),
         "drawdown_curve": _downsample_curve(dd),
+    })
+
+
+def _portfolio_options(req: dict, p: dict) -> dict:
+    """Validate the free Portfolio Lab controls without mutating the base request."""
+    frequency = str(req.get("rebalance_frequency", "monthly")).lower()
+    if frequency not in portfolio.REBALANCE_FREQUENCIES:
+        raise WorkflowError(f"rebalance_frequency must be one of {portfolio.REBALANCE_FREQUENCIES}")
+    allocation_method = str(req.get("allocation_method", "score_weighted")).lower()
+    if allocation_method not in portfolio.ALLOCATION_METHODS:
+        raise WorkflowError(f"allocation_method must be one of {portfolio.ALLOCATION_METHODS}")
+    max_name_weight = float(req.get("max_name_weight", min(0.10, p["gross"])))
+    if not (0.01 <= max_name_weight <= p["gross"]):
+        raise WorkflowError("max_name_weight must be between 1% and gross exposure")
+    supplied_turnover = req.get("max_turnover")
+    max_turnover = None if supplied_turnover in (None, 0, 0.0) else float(supplied_turnover)
+    if max_turnover is not None and not (0.01 <= max_turnover <= 3.0):
+        raise WorkflowError("max_turnover must be in [0.01, 3.0] when supplied")
+    supplied_vol = req.get("target_annual_vol")
+    target_vol = None if supplied_vol in (None, 0, 0.0) else float(supplied_vol)
+    if target_vol is not None and not (0.05 <= target_vol <= 1.0):
+        raise WorkflowError("target_annual_vol must be in [0.05, 1.0] when supplied")
+    options = {
+        "rebalance_frequency": frequency, "allocation_method": allocation_method, "max_name_weight": max_name_weight,
+        "max_turnover": max_turnover, "target_annual_vol": target_vol,
+        "spread_bps": float(req.get("spread_bps", 2.0)), "impact_bps": float(req.get("impact_bps", 12.0)),
+        "short_borrow_bps": float(req.get("short_borrow_bps", 50.0)),
+        "capital": float(req.get("capital", 1_000_000.0)),
+        "max_participation": float(req.get("max_participation", 0.05)),
+        "adv_lookback": int(req.get("adv_lookback", 20)),
+    }
+    try:
+        ExecutionModel(base_cost_bps=p["cost_bps"], **{key: options[key] for key in (
+            "spread_bps", "impact_bps", "short_borrow_bps", "capital", "max_participation", "adv_lookback"
+        )}).validate()
+    except ValueError as error:
+        raise WorkflowError(str(error)) from error
+    return options
+
+
+def _portfolio_oos(returns: pd.Series, *, n_trials: int) -> dict:
+    """Chronological holdout on the realised costed portfolio return stream."""
+    cut = int(len(returns) * 0.7)
+    insample, oos = returns.iloc[:cut], returns.iloc[cut:]
+    is_sr = metrics.annualised_sharpe(insample)
+    oos_sr = metrics.annualised_sharpe(oos)
+    dsr = metrics.deflated_sharpe_ratio(oos, n_trials=max(1, n_trials))
+    return {
+        "method": "chronological 70/30 holdout on realised constrained returns",
+        "in_sample_sharpe": float(is_sr), "out_sample_sharpe": float(oos_sr),
+        "out_sample_deflated_sr": None if np.isnan(dsr) else float(dsr),
+        "overfit_warning": bool(is_sr - oos_sr > 1.0),
+        "oos_significant": bool(not np.isnan(dsr) and dsr >= 0.95),
+    }
+
+
+def data_connections_status() -> dict:
+    """Secret-free connection facts for the UI and future account settings."""
+    sec_user_agent = os.environ.get("SEC_USER_AGENT", "").strip()
+    return {
+        "licensed_bundle": licensed_data.bundle_status(),
+        "fundamental_adapters": [
+            {
+                "id": "sec_edgar",
+                "label": "SEC EDGAR company facts",
+                "configured": bool(sec_user_agent) and "example.com" not in sec_user_agent,
+                "point_in_time_fundamentals": True,
+                "note": "Public filing-date data; it does not supply a survivorship-free historical universe.",
+            },
+            {
+                "id": "simfin",
+                "label": "SimFin",
+                "configured": bool(os.environ.get("SIMFIN_API_KEY", "").strip()),
+                "point_in_time_fundamentals": False,
+                "note": "Budget adapter; latest-restated values remain blocked for point-in-time factor research.",
+            },
+            {
+                "id": "sharadar",
+                "label": "Sharadar SF1 / Nasdaq Data Link",
+                "configured": bool(os.environ.get("NASDAQ_DATA_LINK_API_KEY", "").strip()),
+                "point_in_time_fundamentals": True,
+                "note": "As-reported fundamentals adapter. Pair it with price and universe history in a licensed bundle for full studies.",
+            },
+        ],
+    }
+
+
+def _data_readiness(provider: str) -> dict:
+    if provider == "synthetic":
+        return {
+            "source": "deterministic synthetic market", "point_in_time_fundamentals": True,
+            "survivorship_free_universe": False, "live_investible": False,
+            "note": "Useful for engine validation only; it cannot establish a tradeable edge.",
+        }
+    if provider == "yfinance":
+        return {
+            "source": "Yahoo Finance adjusted historical prices and volume", "point_in_time_fundamentals": False,
+            "survivorship_free_universe": False, "live_investible": False,
+            "note": "Adjusted prices help with splits/dividends, but current-ticker history can exclude delisted names. Use a point-in-time licensed universe before investment use.",
+        }
+    status = licensed_data.bundle_status()
+    provider_name = status.get("provider_name") or "licensed local bundle"
+    has_full_attestation = all((
+        status.get("point_in_time_fundamentals"),
+        status.get("survivorship_free_universe"),
+        status.get("includes_delisted_securities"),
+        status.get("prices_adjusted_for_corporate_actions"),
+    ))
+    return {
+        "source": provider_name,
+        "point_in_time_fundamentals": bool(status.get("point_in_time_fundamentals")),
+        "survivorship_free_universe": bool(status.get("survivorship_free_universe")),
+        "live_investible": False,
+        "note": (
+            "The local bundle declares point-in-time fundamentals, historical membership, delisted coverage, and corporate-action-adjusted prices. Keep the vendor manifest and license evidence with the research audit."
+            if has_full_attestation
+            else "The local bundle is usable only within the coverage attested in its manifest. Review Data connections before interpreting the study."
+        ),
+    }
+
+
+def run_portfolio_research(req: dict, ledger: "TrialLedger | None" = None) -> dict:
+    """Run the free, constrained portfolio-research workflow.
+
+    This route intentionally stops before broker integration.  It tests historical
+    portfolio mechanics, liquidity stress, and validation, then can save a clearly
+    labelled historical paper-rebalance plan for review.
+    """
+    p = _validate(req)
+    options = _portfolio_options(req, p)
+    close, volume, score, _fund = _prepare_strategy_inputs(p)
+    weights = portfolio.construct_long_short_weights(
+        score, close, method=options["allocation_method"], gross=p["gross"],
+        max_name_weight=options["max_name_weight"]
+    )
+    weights = portfolio.apply_rebalance_schedule(weights, options["rebalance_frequency"])
+    weights = portfolio.limit_turnover(weights, options["max_turnover"])
+    weights = portfolio.apply_volatility_ceiling(
+        weights, close, target_annual_vol=options["target_annual_vol"], lookback=63
+    )
+    model = ExecutionModel(
+        base_cost_bps=p["cost_bps"], spread_bps=options["spread_bps"], impact_bps=options["impact_bps"],
+        short_borrow_bps=options["short_borrow_bps"], capital=options["capital"],
+        max_participation=options["max_participation"], adv_lookback=options["adv_lookback"],
+    )
+    result = backtest(close, weights, cost_bps=p["cost_bps"], volume=volume, execution_model=model)
+    if ledger is not None:
+        rec = ledger.record(req)
+        effective_trials = ledger.effective_n_trials(p["n_trials"])
+    else:
+        rec, effective_trials = None, p["n_trials"]
+    scorecard = result.summary(n_trials=effective_trials)
+    meta = {
+        **p, "n_trials": effective_trials, "declared_n_trials": p["n_trials"],
+        "n_symbols": int(close.shape[1]), "n_days": int(len(close)),
+        "start_date": str(close.index[0].date()), "end_date": str(close.index[-1].date()),
+        "engine_version": "0.0.1", "disclaimer": DISCLAIMER, "portfolio_controls": options,
+    }
+    manifest = reproducibility.build_manifest(
+        request=req, meta=meta, close=close, positions=result.positions, scorecard=scorecard,
+        engine_version=meta["engine_version"],
+    )
+    paper_plan = paper.rebalance_plan(result.positions, capital=options["capital"], research_fingerprint=manifest["research_fingerprint"])
+    diagnostics = portfolio.portfolio_diagnostics(result.positions, close)
+    trial_audit = {
+        "declared_n_trials": p["n_trials"], "effective_n_trials": effective_trials,
+        "haircut_was_raised": bool(effective_trials > p["n_trials"]),
+    }
+    if ledger is not None:
+        trial_audit.update(rec or {})
+        trial_audit.update(ledger.snapshot())
+    drawdown = result.equity / result.equity.cummax() - 1.0
+    return _jsonable({
+        "meta": meta,
+        "verdict": "Research-only portfolio simulation. It is not a live allocation or a prediction of investment performance.",
+        "scorecard": scorecard, "portfolio": diagnostics, "execution": result.execution_audit,
+        "out_of_sample": _portfolio_oos(result.returns, n_trials=effective_trials),
+        "robustness": validation.robustness_report(result.returns, seed=p["seed"]),
+        "data_readiness": _data_readiness(p["provider"]), "trial_audit": trial_audit,
+        "manifest": manifest, "paper_plan": paper_plan,
+        "equity_curve": _downsample_curve(result.equity), "drawdown_curve": _downsample_curve(drawdown),
     })
 
 
