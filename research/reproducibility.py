@@ -4,7 +4,9 @@ from __future__ import annotations
 import hashlib
 import json
 import platform
-import subprocess
+import shutil
+# This module invokes only a resolved local Git executable with constant audit queries.
+import subprocess  # nosec B404
 import sys
 from datetime import datetime, timezone
 from importlib.metadata import PackageNotFoundError, version
@@ -27,10 +29,13 @@ def _file_digest(path: Path) -> str | None:
 
 def _git_value(*args: str) -> str | None:
     """Return repository state when Git is available, never blocking a study."""
+    git_executable = shutil.which("git")
+    if git_executable is None:
+        return None
     try:
         completed = subprocess.run(
-            ["git", *args], cwd=_PROJECT_ROOT, check=True, capture_output=True,
-            text=True, timeout=2,
+            [git_executable, *args], cwd=_PROJECT_ROOT, check=True,
+            capture_output=True, text=True, timeout=2, shell=False,  # nosec B603
         )
     except (OSError, subprocess.SubprocessError):
         return None

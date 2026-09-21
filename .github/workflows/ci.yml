@@ -39,4 +39,4 @@ jobs:
         run: uv run --locked --no-sync pytest --cov --cov-report=term-missing --cov-report=xml
 
       - name: Sanity-check the honest backtest end-to-end
-        run: python examples/demo_momentum.py
+        run: uv run --locked --no-sync python examples/demo_momentum.py

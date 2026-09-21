@@ -166,7 +166,8 @@ class FinBertExtractor:
             if result is not None:
                 break
         if result is None:
-            assert last_error is not None
+            if last_error is None:
+                raise RuntimeError("Hugging Face inference returned no classification result.")
             raise last_error
         scores = _classification_scores(result)
         sentiment = scores["positive"] - scores["negative"]
