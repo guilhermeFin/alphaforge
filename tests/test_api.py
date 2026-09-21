@@ -28,6 +28,77 @@ def test_health():
     assert "not investment advice" in r.json()["disclaimer"]
 
 
+def test_data_connections_endpoint_hides_credentials_and_raw_paths(monkeypatch):
+    monkeypatch.setenv("ALPHAFORGE_LICENSED_DATA_PATH", "")
+    body = TestClient(app).get("/data-connections").json()
+    assert body["licensed_bundle"]["configured"] is False
+    rendered = str(body)
+    assert "C:\\" not in rendered and "/Users/" not in rendered
+    assert "SIMFIN_API_KEY" not in rendered and "NASDAQ_DATA_LINK_API_KEY" not in rendered
+
+
+def test_protocol_api_executes_a_bounded_stage_and_prevents_url_mismatch(tmp_path, monkeypatch):
+    from research.research_protocol import ResearchProtocolStore
+
+    monkeypatch.setattr("api.main._PROTOCOL_STORE", ResearchProtocolStore(tmp_path / "protocol.db"))
+
+    def fake_run(request, ledger=None):
+        return {
+            "manifest": {"research_fingerprint": "protocol-fingerprint"},
+            "meta": {"start_date": request["evaluation_start"], "end_date": request["end"]},
+            "data_audit": {"status": "supported"},
+            "evidence_card": {"status": "research_supported"},
+            "scorecard": {"ann_sharpe": 0.4},
+            "verdict": "NOT CREDIBLE: fixture",
+        }
+
+    monkeypatch.setattr("api.main.run_backtest_workflow", fake_run)
+    api = TestClient(app)
+    created = api.post("/protocols", json={
+        "hypothesis": "Quality survives costs in a fixed study.",
+        "research_end": "2017-12-29", "validation_end": "2019-12-31", "final_holdout_end": "2020-10-19",
+    })
+    assert created.status_code == 200, created.text
+    study_id = created.json()["id"]
+    payload = {**_small_req(factor="quality"), "study_id": study_id, "stage": "validation"}
+    response = api.post(f"/protocols/{study_id}/run", json=payload)
+    assert response.status_code == 200, response.text
+    assert response.json()["protocol"]["stage"] == "validation"
+    mismatch = api.post(f"/protocols/{study_id}/run", json={**payload, "study_id": "a" * 32})
+    assert mismatch.status_code == 400
+
+
+def test_fixed_benchmark_api_has_no_caller_selected_factor_surface(monkeypatch):
+    monkeypatch.setattr("api.main.run_benchmark_suite", lambda req, ledger=None: {
+        "kind": "fixed_benchmark_suite", "benchmarks": [{"factor": "momentum"}], "manifest": {"research_fingerprint": "fixed"},
+    })
+    response = TestClient(app).post("/benchmark-suite", json=_small_req(factor="blend"))
+    assert response.status_code == 200
+    assert response.json()["kind"] == "fixed_benchmark_suite"
+
+
+def test_event_study_api_validates_bounded_document_payload(monkeypatch):
+    monkeypatch.setattr("api.main.run_filing_event_study", lambda req: {"status": "insufficient_data", "n_events": len(req["features"])})
+    payload = {"features": [{"symbol": "AAPL", "available_at": "2024-05-01", "document_id": "doc-1", "sentiment": 0.2}]}
+    response = TestClient(app).post("/filing-event-study", json=payload)
+    assert response.status_code == 200
+    assert response.json()["status"] == "insufficient_data"
+    assert TestClient(app).post("/filing-event-study", json={**payload, "unknown": True}).status_code == 422
+
+
+def test_portfolio_research_endpoint_runs_constrained_execution_study():
+    payload = _small_req(periods=400, n_trials=10)
+    payload.update({"rebalance_frequency": "monthly", "max_name_weight": 0.10,
+                    "target_annual_vol": 0.15, "capital": 1_000_000})
+    response = TestClient(app).post("/portfolio-research", json=payload)
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert {"portfolio", "execution", "robustness", "manifest", "paper_plan", "data_readiness"} <= body.keys()
+    assert body["portfolio"]["max_name_weight"] <= 0.10 + 1e-12
+    assert body["manifest"]["research_fingerprint"]
+    assert "NaN" not in response.text
+
+
 def test_backtest_endpoint_full_contract():
     r = client.post("/backtest", json=_small_req())
     assert r.status_code == 200, r.text
@@ -38,10 +109,24 @@ def test_backtest_endpoint_full_contract():
     assert body["meta"]["disclaimer"]
     assert body["scorecard"]["n_periods"] == 400
     assert {"deflated_sr", "psr_vs_0", "ann_sharpe", "max_drawdown"} <= body["scorecard"].keys()
+
+
+def test_backtest_response_includes_strategy_report_risk_and_rigor():
+    response = client.post("/backtest", json=_small_req())
+    assert response.status_code == 200, response.text
+    body = response.json()
+    report = body["strategy_report"]
+    assert {"volatility_downside_risk", "benchmark_relative", "tail_risk_distribution", "statistical_rigor", "chart_specs"} <= report.keys()
+    assert {"sortino_ratio", "ulcer_index", "omega_ratio", "k_ratio"} <= report["volatility_downside_risk"].keys()
+    rigor = report["statistical_rigor"]
+    assert {"probabilistic_sharpe_ratio", "hac_sharpe_tstat", "minimum_track_record_length_95"} <= rigor.keys()
+    assert rigor["cpcv_pbo"]["purge_periods"] == 1
+    assert report["benchmark_relative"]["n_observations"] > 10
+    assert report["tail_risk_distribution"]["historical_var_99"] is not None
     assert {"overfit_warning", "oos_significant"} <= body["out_of_sample"].keys()
     assert len(body["equity_curve"]) > 10
     # JSON-safety: no NaN should ever be serialised (they become null)
-    assert "NaN" not in r.text
+    assert "NaN" not in response.text
 
 
 def test_backtest_deterministic_same_seed():
@@ -273,4 +358,7 @@ def test_response_includes_signal_quality():
         assert k in sq
     # the synthetic world plants a real predictive quality signal -> IC must be significant
     assert sq["significant"] is True
+    temporal = body["temporal_stability"]
+    assert temporal["status"] in {"stable", "weakened", "unstable", "insufficient_evidence"}
+    assert temporal["cohorts"]
     assert sq["mean_ic"] > 0

@@ -268,15 +268,15 @@ def compact_pbo(
     }
 
 
-def pbo_from_factor_grid(
+def candidate_returns_from_factor_grid(
     close,
     weight_fn,
     param_grid,
     cost_bps: float = 5.0,
     periods_per_year: int = TRADING_DAYS,
     n_splits: int = 8,
-) -> dict:
-    """Run a parameter grid through the honest backtester, then CSCV-PBO it.
+) -> pd.DataFrame:
+    """Return one point-in-time-safe net-return column per parameter configuration.
 
     Parameters
     ----------
@@ -286,9 +286,8 @@ def pbo_from_factor_grid(
     param_grid : iterable of param dicts; one column of NET returns per dict.
     cost_bps, periods_per_year, n_splits : forwarded as documented.
 
-    Returns
-    -------
-    dict from compact_pbo over the (T x M) NET-return matrix.
+    The matrix is reusable by CSCV, purged CPCV, White's Reality Check, and other
+    multiple-testing diagnostics without rerunning the expensive backtests.
     """
     from .backtest import backtest  # local import: avoid import cycle
 
@@ -306,7 +305,21 @@ def pbo_from_factor_grid(
             label = f"{label}#{i}"
         columns[label] = pd.Series(res.returns)
 
-    matrix = pd.DataFrame(columns)
+    return pd.DataFrame(columns)
+
+
+def pbo_from_factor_grid(
+    close,
+    weight_fn,
+    param_grid,
+    cost_bps: float = 5.0,
+    periods_per_year: int = TRADING_DAYS,
+    n_splits: int = 8,
+) -> dict:
+    """Run a parameter grid through the honest backtester, then CSCV-PBO it."""
+    matrix = candidate_returns_from_factor_grid(
+        close, weight_fn, param_grid, cost_bps=cost_bps, periods_per_year=periods_per_year,
+    )
     return compact_pbo(
         matrix,
         n_splits=n_splits,

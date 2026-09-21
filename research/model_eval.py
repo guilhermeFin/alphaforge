@@ -28,7 +28,7 @@ from __future__ import annotations
 import math
 import warnings
 from itertools import combinations
-from typing import Iterable, Iterator
+from typing import Iterable, Iterator, Mapping, Sequence
 
 import numpy as np
 import pandas as pd
@@ -192,6 +192,111 @@ def cpcv_split(
                 continue
             train_idx = _purge_train(train_idx, tg, start, end, embargo, n)
         yield train_idx, test_idx, path_id
+
+
+def audit_splits(
+    label_start,
+    label_end,
+    splits: Iterable[tuple[np.ndarray, np.ndarray]],
+    *,
+    groups: Sequence[object] | None = None,
+) -> dict:
+    """Audit that supplied train/test splits contain no label or group overlap."""
+    start, end = _as_int_array(label_start), _as_int_array(label_end)
+    if len(start) != len(end):
+        raise ValueError("label_start and label_end must have the same length")
+    group_array = np.asarray(groups, dtype=object) if groups is not None else None
+    if group_array is not None and len(group_array) != len(start):
+        raise ValueError("groups must have one entry per sample")
+
+    records = []
+    any_overlap = False
+    any_group_overlap = False
+    for fold_id, split in enumerate(splits):
+        train_idx, test_idx = np.asarray(split[0], dtype=int), np.asarray(split[1], dtype=int)
+        sorted_train = np.argsort(start[train_idx])
+        train_start = start[train_idx][sorted_train]
+        train_end_prefix = np.maximum.accumulate(end[train_idx][sorted_train])
+        overlap = False
+        for test_start, test_end in zip(start[test_idx], end[test_idx], strict=False):
+            position = int(np.searchsorted(train_start, test_end, side="right")) - 1
+            if position >= 0 and train_end_prefix[position] >= test_start:
+                overlap = True
+                break
+        group_overlap_count = 0
+        if group_array is not None:
+            group_overlap_count = len(set(group_array[train_idx]).intersection(group_array[test_idx]))
+        any_overlap |= overlap
+        any_group_overlap |= group_overlap_count > 0
+        records.append({
+            "fold": int(fold_id),
+            "train_observations": int(len(train_idx)),
+            "test_observations": int(len(test_idx)),
+            "label_interval_overlap": bool(overlap),
+            "shared_group_count": int(group_overlap_count),
+        })
+    return {
+        "n_folds": int(len(records)),
+        "has_label_interval_overlap": bool(any_overlap),
+        "has_group_overlap": bool(any_group_overlap),
+        "folds": records,
+    }
+
+
+def group_holdout_split(groups: Sequence[object], n_splits: int = 5) -> Iterator[tuple[np.ndarray, np.ndarray]]:
+    """Hold whole groups out as a complementary entity-generalisation stress test."""
+    group_array = np.asarray(groups, dtype=object)
+    unique_groups = pd.Index(pd.unique(group_array))
+    if len(unique_groups) < 2:
+        raise ValueError("At least two distinct groups are required for group holdout.")
+    bounds = np.linspace(0, len(unique_groups), min(n_splits, len(unique_groups)) + 1).astype(int)
+    all_idx = np.arange(len(group_array))
+    for fold in range(len(bounds) - 1):
+        held_out = unique_groups[bounds[fold] : bounds[fold + 1]]
+        test_idx = all_idx[np.isin(group_array, held_out)]
+        train_idx = all_idx[~np.isin(group_array, held_out)]
+        if len(test_idx) and len(train_idx):
+            yield train_idx, test_idx
+
+
+def cpcv_path_design(n_groups: int = 6, n_test_groups: int = 2) -> list[list[tuple[int, ...]]]:
+    """Create disjoint CPCV path designs for the standard pairwise setup."""
+    if n_test_groups == 1:
+        return [[(group,) for group in range(n_groups)]]
+    if n_test_groups != 2 or n_groups < 4 or n_groups % 2:
+        raise ValueError("CPCV path reconstruction requires an even n_groups with n_test_groups=2.")
+    rotating = list(range(n_groups - 1))
+    fixed = n_groups - 1
+    paths: list[list[tuple[int, ...]]] = []
+    for _ in range(n_groups - 1):
+        round_pairs = [(rotating[i], rotating[-1 - i]) for i in range((n_groups - 1) // 2)]
+        round_pairs.append((fixed, rotating[(n_groups - 1) // 2]))
+        paths.append([tuple(sorted(pair)) for pair in round_pairs])
+        rotating = [rotating[-1], *rotating[:-1]]
+    return paths
+
+
+def reconstruct_cpcv_paths(
+    fold_predictions: Mapping[tuple[int, ...], pd.Series],
+    group_indices: Sequence[np.ndarray],
+) -> pd.DataFrame:
+    """Rebuild full OOS CPCV paths from per-held-out-group predictions."""
+    n_groups = len(group_indices)
+    paths = cpcv_path_design(n_groups=n_groups, n_test_groups=2)
+    all_positions = np.sort(np.concatenate([np.asarray(items, dtype=int) for items in group_indices]))
+    output: dict[str, pd.Series] = {}
+    for path_id, path in enumerate(paths):
+        pieces = []
+        for key in path:
+            prediction = fold_predictions.get(tuple(sorted(key)))
+            if prediction is None:
+                raise ValueError(f"Missing predictions for held-out group combination {key}.")
+            pieces.append(pd.Series(prediction, dtype=float))
+        assembled = pd.concat(pieces).groupby(level=0).first().reindex(all_positions)
+        if assembled.isna().any():
+            raise ValueError(f"CPCV path {path_id} does not cover every sample exactly once.")
+        output[f"path_{path_id + 1}"] = assembled
+    return pd.DataFrame(output, index=all_positions)
 
 
 # --------------------------------------------------------------------------- #
@@ -411,6 +516,7 @@ def evaluate_model(estimator, X, y, label_start, label_end, splits) -> dict:
         split_iter = list(splits(label_start, label_end))
     else:
         split_iter = list(splits)
+    split_audit = audit_splits(label_start, label_end, split_iter)
 
     oos_pred_parts = []
     oos_actual_parts = []
@@ -442,7 +548,7 @@ def evaluate_model(estimator, X, y, label_start, label_end, splits) -> dict:
             "n_folds": 0, "n_oos_predictions": 0,
             "oos_rank_ic": float("nan"), "oos_rank_ic_tstat": float("nan"),
             "oos_long_short_sharpe": float("nan"),
-            "n_ic_dates": 0, "per_fold_rank_ic": [],
+            "n_ic_dates": 0, "per_fold_rank_ic": [], "split_audit": split_audit,
         }
 
     pred = pd.Series(np.concatenate(oos_pred_parts))
@@ -470,6 +576,7 @@ def evaluate_model(estimator, X, y, label_start, label_end, splits) -> dict:
         "n_ic_dates": int(n_ic_dates),
         "per_fold_rank_ic": [None if (f is None or not np.isfinite(f)) else round(f, 4)
                              for f in per_fold_ic],
+        "split_audit": split_audit,
     }
 
 
