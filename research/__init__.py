@@ -24,7 +24,7 @@ from . import (data, factors, metrics, backtest, walkforward, stats_guards,
                event_study, local_history, portfolio, execution, validation,
                reproducibility, paper, licensed_data, risk, statistical_rigor,
                strategy_report, benchmark, tail_risk, evidence, robustness_matrix,
-               factor_diagnostics, research_protocol, microstructure, temporal_stability)
+               factor_diagnostics, research_protocol, protocol_runner, benchmark_suite, microstructure, temporal_stability)
 
 __all__ = ["data", "factors", "metrics", "backtest", "walkforward", "stats_guards",
            "fundamentals", "providers", "signal_quality", "factor_lib",
@@ -32,5 +32,5 @@ __all__ = ["data", "factors", "metrics", "backtest", "walkforward", "stats_guard
            "text_features", "event_study", "local_history", "portfolio", "execution",
            "validation", "reproducibility", "paper", "licensed_data", "risk",
            "statistical_rigor", "strategy_report", "benchmark", "tail_risk"]
-__all__ += ["evidence", "robustness_matrix", "factor_diagnostics", "research_protocol", "microstructure", "temporal_stability"]
+__all__ += ["evidence", "robustness_matrix", "factor_diagnostics", "research_protocol", "protocol_runner", "benchmark_suite", "microstructure", "temporal_stability"]
 __version__ = "0.0.1"

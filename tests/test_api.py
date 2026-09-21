@@ -37,6 +37,46 @@ def test_data_connections_endpoint_hides_credentials_and_raw_paths(monkeypatch):
     assert "SIMFIN_API_KEY" not in rendered and "NASDAQ_DATA_LINK_API_KEY" not in rendered
 
 
+def test_protocol_api_executes_a_bounded_stage_and_prevents_url_mismatch(tmp_path, monkeypatch):
+    from research.research_protocol import ResearchProtocolStore
+
+    monkeypatch.setattr("api.main._PROTOCOL_STORE", ResearchProtocolStore(tmp_path / "protocol.db"))
+
+    def fake_run(request, ledger=None):
+        return {
+            "manifest": {"research_fingerprint": "protocol-fingerprint"},
+            "meta": {"start_date": request["evaluation_start"], "end_date": request["end"]},
+            "data_audit": {"status": "supported"},
+            "evidence_card": {"status": "research_supported"},
+            "scorecard": {"ann_sharpe": 0.4},
+            "verdict": "NOT CREDIBLE: fixture",
+        }
+
+    monkeypatch.setattr("api.main.run_backtest_workflow", fake_run)
+    api = TestClient(app)
+    created = api.post("/protocols", json={
+        "hypothesis": "Quality survives costs in a fixed study.",
+        "research_end": "2017-12-29", "validation_end": "2019-12-31", "final_holdout_end": "2020-10-19",
+    })
+    assert created.status_code == 200, created.text
+    study_id = created.json()["id"]
+    payload = {**_small_req(factor="quality"), "study_id": study_id, "stage": "validation"}
+    response = api.post(f"/protocols/{study_id}/run", json=payload)
+    assert response.status_code == 200, response.text
+    assert response.json()["protocol"]["stage"] == "validation"
+    mismatch = api.post(f"/protocols/{study_id}/run", json={**payload, "study_id": "a" * 32})
+    assert mismatch.status_code == 400
+
+
+def test_fixed_benchmark_api_has_no_caller_selected_factor_surface(monkeypatch):
+    monkeypatch.setattr("api.main.run_benchmark_suite", lambda req, ledger=None: {
+        "kind": "fixed_benchmark_suite", "benchmarks": [{"factor": "momentum"}], "manifest": {"research_fingerprint": "fixed"},
+    })
+    response = TestClient(app).post("/benchmark-suite", json=_small_req(factor="blend"))
+    assert response.status_code == 200
+    assert response.json()["kind"] == "fixed_benchmark_suite"
+
+
 def test_event_study_api_validates_bounded_document_payload(monkeypatch):
     monkeypatch.setattr("api.main.run_filing_event_study", lambda req: {"status": "insufficient_data", "n_events": len(req["features"])})
     payload = {"features": [{"symbol": "AAPL", "available_at": "2024-05-01", "document_id": "doc-1", "sentiment": 0.2}]}

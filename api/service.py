@@ -19,7 +19,7 @@ import pandas as pd
 
 from research import (data, event_study, factors, factor_lib, fundamentals, signal_quality,
                       stats_guards, overfitting, metrics, portfolio, validation, reproducibility, paper,
-                      statistical_rigor, evidence, robustness_matrix, factor_diagnostics)
+                      statistical_rigor, evidence, robustness_matrix, factor_diagnostics, benchmark_suite)
 from research import licensed_data
 from research import model_time_integrity, research_validity
 from research.macro import FredAlfredProvider
@@ -226,13 +226,38 @@ def _validate(req: dict) -> dict:
 
     start = str(req.get("start", "2015-01-02"))
     try:
-        pd.Timestamp(start)
+        start_at = pd.Timestamp(start).normalize()
     except Exception:
         raise WorkflowError("start must be a valid date, e.g. 2015-01-02")
 
+    end_value = req.get("end")
+    if end_value in (None, ""):
+        end = None
+    else:
+        try:
+            end_at = pd.Timestamp(end_value).normalize()
+        except Exception as error:
+            raise WorkflowError("end must be a valid date, e.g. 2024-12-31") from error
+        if end_at <= start_at:
+            raise WorkflowError("end must be after start")
+        end = end_at.date().isoformat()
+
+    evaluation_value = req.get("evaluation_start")
+    if evaluation_value in (None, ""):
+        evaluation_start = None
+    else:
+        try:
+            evaluation_at = pd.Timestamp(evaluation_value).normalize()
+        except Exception as error:
+            raise WorkflowError("evaluation_start must be a valid date, e.g. 2024-01-01") from error
+        if evaluation_at < start_at or (end is not None and evaluation_at > pd.Timestamp(end)):
+            raise WorkflowError("evaluation_start must fall within the loaded date window")
+        evaluation_start = evaluation_at.date().isoformat()
+
     return {
         "provider": provider, "factor": factor, "symbols": symbols,
-        "periods": periods, "seed": seed, "start": start,
+        "periods": periods, "seed": seed, "start": start_at.date().isoformat(), "end": end,
+        "evaluation_start": evaluation_start,
         "lookback": lookback, "skip": skip,
         "cost_bps": cost_bps, "n_trials": n_trials, "gross": gross,
     }
@@ -834,6 +859,9 @@ def _prepare_strategy_inputs(p: dict) -> tuple[pd.DataFrame, pd.DataFrame | None
             world = data.make_synthetic_world(syms, start=p["start"], periods=p["periods"],
                                               seed=p["seed"], quality_to_drift=0.0016)
             close, volume = world.close, world.volume
+            if p["end"] is not None:
+                cutoff = pd.Timestamp(p["end"])
+                close, volume = close.loc[close.index <= cutoff], volume.loc[volume.index <= cutoff]
             if len(close) < 400:
                 raise WorkflowError("fundamental factors need >= 400 days (several quarters + OOS)")
             if p["factor"] in LEGACY_FUNDAMENTAL:
@@ -857,14 +885,14 @@ def _prepare_strategy_inputs(p: dict) -> tuple[pd.DataFrame, pd.DataFrame | None
                 fund_for_attr = fund
         elif p["provider"] == "licensed_bundle":
             try:
-                panel = data.get_panel(p["symbols"], start=p["start"], provider="licensed_bundle")
+                panel = data.get_panel(p["symbols"], start=p["start"], end=p["end"], provider="licensed_bundle")
                 close = panel.close.dropna(how="all", axis=1)
                 volume = panel.volume.reindex_like(close)
                 if close.shape[1] < 2:
                     raise WorkflowError("need at least 2 eligible symbols with licensed price history")
                 if len(close) < 400:
                     raise WorkflowError("fundamental factors need >= 400 days (several quarters + OOS)")
-                obs = licensed_data.load_fundamentals(list(close.columns), start=p["start"])
+                obs = licensed_data.load_fundamentals(list(close.columns), start=p["start"], end=p["end"])
             except licensed_data.LicensedDataError as error:
                 raise WorkflowError(str(error)) from error
             fund = fundamentals.build_fundamentals(obs, close.index, list(close.columns))
@@ -891,11 +919,11 @@ def _prepare_strategy_inputs(p: dict) -> tuple[pd.DataFrame, pd.DataFrame | None
         if p["provider"] == "synthetic":
             panel = data.get_panel(
                 p["symbols"] or [f"S{i:02d}" for i in range(15)], provider="synthetic",
-                start=p["start"], periods=p["periods"], seed=p["seed"],
+                start=p["start"], end=p["end"], periods=p["periods"], seed=p["seed"],
             )
         else:
             try:
-                panel = data.get_panel(p["symbols"], start=p["start"], provider=p["provider"])
+                panel = data.get_panel(p["symbols"], start=p["start"], end=p["end"], provider=p["provider"])
             except licensed_data.LicensedDataError as error:
                 raise WorkflowError(str(error)) from error
         close = panel.close.dropna(how="all", axis=1)
@@ -922,14 +950,36 @@ def run_backtest_workflow(req: dict, ledger: "TrialLedger | None" = None) -> dic
     close, _volume, score, fund_for_attr = _prepare_strategy_inputs(p)
 
     weights = factors.long_short_weights(score, gross=p["gross"])
-    res = backtest(close, weights, cost_bps=p["cost_bps"])
+    full_res = backtest(close, weights, cost_bps=p["cost_bps"])
+    evaluation_start = pd.Timestamp(p["evaluation_start"]) if p["evaluation_start"] else close.index[0]
+    evaluation_mask = close.index >= evaluation_start
+    evaluation_close = close.loc[evaluation_mask]
+    evaluation_score = score.loc[evaluation_mask]
+    evaluation_weights = weights.loc[evaluation_mask]
+    if evaluation_close.empty:
+        raise WorkflowError("No usable trading sessions fall inside the requested evaluation window.")
+
+    # Build positions across the complete source window so stage one opens with
+    # legitimate signal history.  Every reported statistic is then calculated
+    # only from the requested evaluation range, normalized to a fresh equity base.
+    stage_returns = full_res.returns.loc[evaluation_mask]
+    res = replace(
+        full_res,
+        equity=(1.0 + stage_returns).cumprod(),
+        returns=stage_returns,
+        gross_returns=full_res.gross_returns.loc[evaluation_mask],
+        positions=full_res.positions.loc[evaluation_mask],
+        costs=None if full_res.costs is None else full_res.costs.loc[evaluation_mask],
+        turnover=None if full_res.turnover is None else full_res.turnover.loc[evaluation_mask],
+    )
 
     # Trial ledger: count DISTINCT configs this workspace has run and ENFORCE the
     # multiple-testing haircut FLOOR on the full-sample Deflated Sharpe. The declared
     # n_trials can only be raised by the engine, never used to under-deflate.
     declared_trials = p["n_trials"]
     if ledger is not None:
-        rec = ledger.record(req)
+        trial_identity = req.get("_trial_identity")
+        rec = ledger.record(trial_identity if isinstance(trial_identity, dict) else req)
         eff_trials = ledger.effective_n_trials(declared_trials)
     else:
         rec, eff_trials = None, declared_trials
@@ -942,9 +992,9 @@ def run_backtest_workflow(req: dict, ledger: "TrialLedger | None" = None) -> dic
         trial_audit.update(rec or {})
         trial_audit.update(ledger.snapshot())
 
-    sigq = signal_quality.compact_scorecard(score, close)  # is the SIGNAL itself predictive?
+    sigq = signal_quality.compact_scorecard(evaluation_score, evaluation_close)  # is the SIGNAL itself predictive?
     scorecard = res.summary(n_trials=eff_trials)
-    oos = split_backtest(close, weights, split=0.7, cost_bps=p["cost_bps"])
+    oos = split_backtest(evaluation_close, evaluation_weights, split=0.7, cost_bps=p["cost_bps"])
 
     # Walk-forward with purge + embargo at fold boundaries: a factor's lookback can
     # otherwise leak prior-fold prices into the first OOS bars of each fold. Purge =
@@ -953,26 +1003,31 @@ def run_backtest_workflow(req: dict, ledger: "TrialLedger | None" = None) -> dic
     purge = (0 if p["factor"] in FUNDAMENTAL_FACTORS
              else _effective_lookback(p["factor"], p["lookback"]) + p["skip"])
     try:
-        wf = walk_forward(close, weights, n_splits=5, cost_bps=p["cost_bps"],
+        wf = walk_forward(evaluation_close, evaluation_weights, n_splits=5, cost_bps=p["cost_bps"],
                           purge_bars=int(purge), embargo_bars=1)
     except ValueError as e:
         wf = {"error": str(e)}
 
-    pbo, candidate_returns = _compute_pbo(close, p)  # CSCV + CPCV search diagnostics
+    if p["evaluation_start"] and pd.Timestamp(p["evaluation_start"]) > pd.Timestamp(p["start"]):
+        pbo, candidate_returns = ({
+            "error": "PBO is a search diagnostic and is not recomputed inside a fixed validation or final-holdout stage."
+        }, None)
+    else:
+        pbo, candidate_returns = _compute_pbo(close, p)  # CSCV + CPCV search diagnostics
     tails = stats_guards.fat_tail_report(res.returns)
     # Stress the unchanged, point-in-time signal. These are deliberately ordinary
     # frictions (worse costs and slower fills), not another optimized search.
-    stress = robustness_matrix.cost_delay_matrix(close, weights, base_cost_bps=p["cost_bps"])
-    factor_health = factor_diagnostics.factor_health(score, close)
+    stress = robustness_matrix.cost_delay_matrix(evaluation_close, evaluation_weights, base_cost_bps=p["cost_bps"])
+    factor_health = factor_diagnostics.factor_health(evaluation_score, evaluation_close)
     bundle_status = licensed_data.bundle_status() if p["provider"] == "licensed_bundle" else None
-    data_audit = evidence.data_integrity_audit(p["provider"], close, p["symbols"], bundle_status)
+    data_audit = evidence.data_integrity_audit(p["provider"], evaluation_close, p["symbols"], bundle_status)
 
     try:
-        ic_values = signal_quality.ic_series(score, close)
-        benchmark_returns = close.pct_change(fill_method=None).mean(axis=1).fillna(0.0)
+        ic_values = signal_quality.ic_series(evaluation_score, evaluation_close)
+        benchmark_returns = evaluation_close.pct_change(fill_method=None).mean(axis=1).fillna(0.0)
         strategy_report = build_strategy_report(
             res.returns, positions=res.positions, benchmark_returns=benchmark_returns,
-            candidate_returns=candidate_returns, ic_values=ic_values, signal=score, metadata={
+            candidate_returns=candidate_returns, ic_values=ic_values, signal=evaluation_score, metadata={
                 "factor": p["factor"], "provider": p["provider"],
                 "benchmark_label": "Equal-weight selected universe (benchmark proxy, not SPY)",
             },
@@ -992,7 +1047,7 @@ def run_backtest_workflow(req: dict, ledger: "TrialLedger | None" = None) -> dic
     # are available; price-only (MKT + UMD) otherwise.
     attr_model = "ff5" if fund_for_attr is not None else "carhart4"
     try:
-        attribution = compact_attribution(res.returns, close, fund=fund_for_attr, model=attr_model)
+        attribution = compact_attribution(res.returns, evaluation_close, fund=fund_for_attr, model=attr_model)
     except Exception as e:  # noqa: BLE001 - attribution is a read-out, never fail the run
         attribution = {"error": f"{type(e).__name__}: {e}"}
 
@@ -1025,12 +1080,14 @@ def run_backtest_workflow(req: dict, ledger: "TrialLedger | None" = None) -> dic
         "n_trials": eff_trials,
         "declared_n_trials": declared_trials,
         "effective_lookback": (None if p["factor"] in FUNDAMENTAL_FACTORS else _effective_lookback(p["factor"], p["lookback"])),
-        "n_symbols": int(close.shape[1]), "n_days": int(len(close)),
-        "start_date": str(close.index[0].date()), "end_date": str(close.index[-1].date()),
+        "n_symbols": int(evaluation_close.shape[1]), "n_days": int(len(evaluation_close)),
+        "start_date": str(evaluation_close.index[0].date()), "end_date": str(evaluation_close.index[-1].date()),
+        "source_start_date": str(close.index[0].date()),
+        "evaluation_window_applied": bool(p["evaluation_start"]),
         "engine_version": "0.0.1", "disclaimer": DISCLAIMER,
     }
     manifest = reproducibility.build_manifest(
-        request=req, meta=meta, close=close, positions=res.positions, scorecard=scorecard,
+        request=req, meta=meta, close=evaluation_close, positions=res.positions, scorecard=scorecard,
         engine_version=meta["engine_version"],
     )
     return _jsonable({
@@ -1054,6 +1111,64 @@ def run_backtest_workflow(req: dict, ledger: "TrialLedger | None" = None) -> dic
         "fat_tails": tails,
         "equity_curve": _downsample_curve(res.equity),
         "drawdown_curve": _downsample_curve(dd),
+    })
+
+
+def run_benchmark_suite(req: dict, ledger: "TrialLedger | None" = None) -> dict:
+    """Evaluate fixed reference factors under the exact same study assumptions.
+
+    The factor list is intentionally not caller-configurable.  Reference models
+    are useful only when they remain reference models, rather than a quiet second
+    search surface.  Unsupported inputs are listed as skips, never replaced with
+    synthetic scores or a different data source.
+    """
+    runs, skipped = benchmark_suite.requests_for_suite(req)
+    rows = []
+    fingerprints = []
+    for definition, run_request in runs:
+        result = run_backtest_workflow(run_request, ledger=ledger)
+        scorecard = result.get("scorecard") or {}
+        manifest = result.get("manifest") or {}
+        fingerprints.append(manifest.get("research_fingerprint"))
+        rows.append({
+            "factor": definition["factor"],
+            "label": definition["label"],
+            "definition": definition["definition"],
+            "verdict": result.get("verdict"),
+            "evidence_status": (result.get("evidence_card") or {}).get("status"),
+            "data_status": (result.get("data_audit") or {}).get("status"),
+            "annual_return": scorecard.get("cagr"),
+            "annual_sharpe": scorecard.get("ann_sharpe"),
+            "deflated_sharpe": scorecard.get("deflated_sr"),
+            "max_drawdown": scorecard.get("max_drawdown"),
+            "research_fingerprint": manifest.get("research_fingerprint"),
+        })
+    if not rows:
+        raise WorkflowError("No fixed benchmarks are compatible with this data source.")
+    base = _validate(req)
+    suite_fingerprint = reproducibility.fingerprint({
+        "kind": "fixed_benchmark_suite_v1",
+        "request": req,
+        "components": fingerprints,
+    })
+    return _jsonable({
+        "kind": "fixed_benchmark_suite",
+        "definition": "Predefined value, quality, momentum, and low-volatility references. No benchmark parameters are optimized in this workflow.",
+        "meta": {
+            "provider": base["provider"],
+            "start": base["start"],
+            "end": base["end"],
+            "evaluation_start": base["evaluation_start"],
+            "cost_bps": base["cost_bps"],
+            "declared_n_trials": max(base["n_trials"], len(benchmark_suite.BENCHMARKS)),
+        },
+        "benchmarks": rows,
+        "skipped": skipped,
+        "manifest": {
+            "research_fingerprint": suite_fingerprint,
+            "component_fingerprints": fingerprints,
+            "engine_version": "0.0.1",
+        },
     })
 
 

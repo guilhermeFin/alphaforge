@@ -48,6 +48,10 @@ def _summary(kind: str, payload: dict) -> dict:
                 "events": payload.get("data_audit", {}).get("n_events"),
                 "flow_survives_baseline": flow.get("survives_baseline"),
                 "research_fingerprint": payload.get("manifest", {}).get("research_fingerprint")}
+    if kind == "benchmark_suite":
+        rows = payload.get("benchmarks") or []
+        return {"benchmarks": len(rows), "provider": (payload.get("meta") or {}).get("provider"),
+                "research_fingerprint": (payload.get("manifest") or {}).get("research_fingerprint")}
     return {}
 
 

@@ -25,6 +25,7 @@ class ResearchProtocolStore:
             conn.execute("CREATE TABLE IF NOT EXISTS studies (id TEXT PRIMARY KEY, parent_id TEXT, created_at TEXT NOT NULL, hypothesis TEXT NOT NULL, boundaries TEXT NOT NULL)")
             conn.execute("CREATE TABLE IF NOT EXISTS protocol_runs (id TEXT PRIMARY KEY, study_id TEXT NOT NULL, created_at TEXT NOT NULL, stage TEXT NOT NULL, fingerprint TEXT NOT NULL, metadata TEXT NOT NULL)")
             conn.execute("CREATE INDEX IF NOT EXISTS idx_protocol_runs_study ON protocol_runs(study_id, created_at)")
+            conn.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_protocol_final_holdout_once ON protocol_runs(study_id, stage) WHERE stage = 'final_holdout'")
 
     def _connect(self) -> sqlite3.Connection:
         conn = sqlite3.connect(self.path, timeout=10)
@@ -55,18 +56,23 @@ class ResearchProtocolStore:
             raise ProtocolError(f"stage must be one of {STAGES}")
         if not fingerprint.strip():
             raise ProtocolError("A reproducibility fingerprint is required for a protocol run.")
-        with self._connect() as conn:
-            exists = conn.execute("SELECT id FROM studies WHERE id = ?", (study_id,)).fetchone()
-            if exists is None:
-                raise ProtocolError("Study was not found.")
+        try:
+            with self._connect() as conn:
+                exists = conn.execute("SELECT id FROM studies WHERE id = ?", (study_id,)).fetchone()
+                if exists is None:
+                    raise ProtocolError("Study was not found.")
+                if stage == "final_holdout":
+                    consumed = conn.execute("SELECT 1 FROM protocol_runs WHERE study_id = ? AND stage = ?", (study_id, stage)).fetchone()
+                    if consumed is not None:
+                        raise ProtocolError("The final holdout has already been consumed. Fork the study before a new final test.")
+                row = {"id": uuid4().hex, "study_id": study_id, "created_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+                       "stage": stage, "fingerprint": fingerprint, "metadata": metadata or {}}
+                conn.execute("INSERT INTO protocol_runs VALUES (?, ?, ?, ?, ?, ?)",
+                             (row["id"], row["study_id"], row["created_at"], row["stage"], row["fingerprint"], json.dumps(row["metadata"], sort_keys=True, default=str)))
+        except sqlite3.IntegrityError as error:
             if stage == "final_holdout":
-                consumed = conn.execute("SELECT 1 FROM protocol_runs WHERE study_id = ? AND stage = ?", (study_id, stage)).fetchone()
-                if consumed is not None:
-                    raise ProtocolError("The final holdout has already been consumed. Fork the study before a new final test.")
-            row = {"id": uuid4().hex, "study_id": study_id, "created_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
-                   "stage": stage, "fingerprint": fingerprint, "metadata": metadata or {}}
-            conn.execute("INSERT INTO protocol_runs VALUES (?, ?, ?, ?, ?, ?)",
-                         (row["id"], row["study_id"], row["created_at"], row["stage"], row["fingerprint"], json.dumps(row["metadata"], sort_keys=True, default=str)))
+                raise ProtocolError("The final holdout has already been consumed. Fork the study before a new final test.") from error
+            raise
         return row
 
     def fork(self, study_id: str, hypothesis: str | None = None) -> dict:
@@ -74,7 +80,11 @@ class ResearchProtocolStore:
             row = conn.execute("SELECT * FROM studies WHERE id = ?", (study_id,)).fetchone()
         if row is None:
             raise ProtocolError("Study was not found.")
-        child = self.create(hypothesis or row["hypothesis"], json.loads(row["boundaries"]))
+        if hypothesis is None or not hypothesis.strip():
+            raise ProtocolError("Forking a study requires a new, explicit hypothesis.")
+        if hypothesis.strip() == row["hypothesis"]:
+            raise ProtocolError("A fork must state a different hypothesis before it can inspect a new final holdout.")
+        child = self.create(hypothesis, json.loads(row["boundaries"]))
         with self._connect() as conn:
             conn.execute("UPDATE studies SET parent_id = ? WHERE id = ?", (study_id, child["id"]))
         child["parent_id"] = study_id

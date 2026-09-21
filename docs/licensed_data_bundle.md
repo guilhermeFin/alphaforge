@@ -85,3 +85,6 @@ The repository also contains key-gated adapters for SEC EDGAR, SimFin, and
 Sharadar SF1. Sharadar's as-reported `datekey` can provide the fundamental side
 of a bundle. A complete study still needs historically eligible price/volume and
 universe data, so export those inputs together and preserve the manifest.
+
+Before running an investment-relevant study, complete the
+[protocol execution checklist](protocol_execution.md#real-data-completion-checklist).

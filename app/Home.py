@@ -26,8 +26,9 @@ import streamlit as st
 
 from api.service import (DISCLAIMER, FACTOR_CATALOG, ML_FEATURE_CHOICES,
                          ML_FEATURE_FACTORS, WorkflowError,
-                         data_connections_status, run_backtest_workflow, run_model_comparison)
+                         data_connections_status, run_backtest_workflow, run_benchmark_suite, run_model_comparison)
 from research.local_history import LocalResearchHistory
+from research.protocol_runner import ProtocolRunner
 from research.research_protocol import ProtocolError, ResearchProtocolStore
 from research.trial_ledger import TrialLedger
 from app.ui import empty_state, footer, page, plot
@@ -93,6 +94,40 @@ def run_request(payload: dict) -> dict:
         return r.json()
     # in-process mode: the UI owns the ledger and enforcement happens here.
     return run_backtest_workflow(payload, ledger=st.session_state["ledger"])
+
+
+def run_protocol_request(study_id: str, stage: str, payload: dict) -> dict:
+    """Run a date-bounded protocol stage through API or the same local engine."""
+    if st.session_state.get("api_mode"):
+        r = httpx.post(
+            f"{API_URL}/protocols/{study_id}/run",
+            json={**payload, "study_id": study_id, "stage": stage}, timeout=240.0,
+            cookies=st.session_state.get("af_cookies", {}),
+        )
+        new_cookies = dict(r.cookies)
+        if new_cookies:
+            st.session_state["af_cookies"] = {**st.session_state.get("af_cookies", {}), **new_cookies}
+        if r.status_code != 200:
+            raise WorkflowError(r.json().get("detail", f"API error {r.status_code}"))
+        return r.json()
+    return ProtocolRunner(st.session_state["protocol_store"]).run(
+        study_id, stage, payload,
+        lambda prepared: run_backtest_workflow(prepared, ledger=st.session_state["ledger"]),
+    )
+
+
+def run_benchmark_request(payload: dict) -> dict:
+    """Run the fixed factor references under the current cost/data assumptions."""
+    if st.session_state.get("api_mode"):
+        r = httpx.post(f"{API_URL}/benchmark-suite", json=payload, timeout=600.0,
+                       cookies=st.session_state.get("af_cookies", {}))
+        new_cookies = dict(r.cookies)
+        if new_cookies:
+            st.session_state["af_cookies"] = {**st.session_state.get("af_cookies", {}), **new_cookies}
+        if r.status_code != 200:
+            raise WorkflowError(r.json().get("detail", f"API error {r.status_code}"))
+        return r.json()
+    return run_benchmark_suite(payload, ledger=st.session_state["ledger"])
 
 
 def run_ml_request(payload: dict) -> dict:
@@ -231,9 +266,25 @@ with st.expander("Research setup", expanded="result" not in st.session_state):
     elif provider == "licensed_bundle":
         st.caption(f"Connected licensed source: {_bundle['provider_name'] or 'local bundle'}")
     run = st.button("Run backtest", type="primary", icon=":material/play_arrow:", disabled=_unsupported)
+    _protected_run = False
+    _protocol_stage_to_run = None
+    _active_protocol = st.session_state.get("active_protocol_id")
+    if _active_protocol:
+        _active_study = st.session_state["protocol_store"].summary(_active_protocol)
+        _available_stages = ["exploration", "validation"] + (
+            ["final_holdout"] if _active_study["final_holdout_available"] else []
+        )
+        _protocol_stage_to_run = st.selectbox(
+            "Protected protocol stage", _available_stages,
+            help="This runs only the selected chronological stage. Earlier data remains signal warm-up, never reported performance.",
+        )
+        _protected_run = st.button(
+            "Run protected stage", icon=":material/lock:",
+            disabled=_unsupported,
+        )
 
 # ----------------------------- run -----------------------------
-if run:
+if run or _protected_run:
     payload = {"provider": provider, "symbols": symbols, "factor": factor,
                "lookback": lookback, "skip": skip, "cost_bps": cost_bps,
                "gross": 1.0, "n_trials": n_trials, "periods": periods,
@@ -242,10 +293,15 @@ if run:
     st.session_state["last_payload"] = payload   # reused by the opt-in ML comparison
     st.session_state.pop("ml_result", None)       # stale once the universe changes
     try:
-        with st.spinner("Running point-in-time backtest…"):
-            st.session_state["result"] = run_request(payload)
+        with st.spinner("Running protected protocol stage…" if _protected_run else "Running point-in-time backtest…"):
+            st.session_state["result"] = (
+                run_protocol_request(_active_protocol, _protocol_stage_to_run, payload)
+                if _protected_run else run_request(payload)
+            )
         st.session_state["local_history"].record(
-            "backtest", f"{factor} / {provider}", st.session_state["result"]
+            "backtest", (f"{_protocol_stage_to_run} protocol / {factor} / {provider}"
+                         if _protected_run else f"{factor} / {provider}"),
+            st.session_state["result"],
         )
         st.rerun()
     except WorkflowError as e:
@@ -357,7 +413,7 @@ with t_evidence:
         _render = {"pass": st.success, "warning": st.warning, "fail": st.error}.get(_gate.get("status"), st.info)
         _render(f"**{_gate.get('label')}** — {_gate.get('detail')}", icon={"pass": ":material/check_circle:", "warning": ":material/warning:", "fail": ":material/cancel:"}.get(_gate.get("status"), ":material/info:"))
     with st.expander("Research protocol", expanded=False):
-        st.caption("Pre-register a hypothesis and protect the final holdout from repeated inspection. This is stored only in this local workspace.")
+        st.caption("Pre-register a hypothesis and run each date-bounded stage from Research setup. Earlier observations can warm up the signal but never count in a protected stage's reported performance.")
         _store = st.session_state["protocol_store"]
         _study_id = st.session_state.get("active_protocol_id")
         if not _study_id:
@@ -380,19 +436,38 @@ with t_evidence:
             _study = _store.summary(_study_id)
             st.write(f"**Hypothesis:** {_study['hypothesis']}")
             st.caption("Boundaries: research through " + _study["boundaries"]["research_end"] + " · validation through " + _study["boundaries"]["validation_end"] + " · final holdout through " + _study["boundaries"]["final_holdout_end"] + ".")
-            _stages = ["exploration", "validation"] + (["final_holdout"] if _study["final_holdout_available"] else [])
-            _stage = st.selectbox("Record this run as", _stages, key="protocol_stage")
-            if st.button("Record this evidence", icon=":material/lock:"):
-                try:
-                    _store.record(_study_id, _stage, (res.get("manifest") or {})["research_fingerprint"], {"evidence_status": evidence_card.get("status"), "run_end": meta.get("end_date")})
-                    st.success("Research record locked locally.")
-                    st.rerun()
-                except (ProtocolError, KeyError) as _error:
-                    st.error(str(_error))
+            st.info("Choose a protected stage in Research setup, then run it there. Existing unprotected results cannot be retroactively labelled as a holdout test.", icon=":material/lock:")
             if _study["runs"]:
-                st.dataframe(pd.DataFrame(_study["runs"])[["created_at", "stage", "fingerprint"]], use_container_width=True, hide_index=True)
+                _runs = pd.DataFrame(_study["runs"])
+                st.dataframe(_runs[["created_at", "stage", "fingerprint"]], use_container_width=True, hide_index=True)
             if not _study["final_holdout_available"]:
                 st.warning("Final holdout is consumed. Fork this study before another final test.")
+    with st.expander("Fixed benchmark suite", expanded=False):
+        st.caption("Compare against predefined value, quality, momentum, and low-volatility references under the same data range and costs. The list and definitions are fixed, so this is not another parameter search.")
+        _benchmark_payload = st.session_state.get("last_payload")
+        if st.button("Run fixed benchmarks", icon=":material/compare_arrows:", disabled=not bool(_benchmark_payload)):
+            try:
+                with st.spinner("Running fixed reference factors…"):
+                    st.session_state["benchmark_result"] = run_benchmark_request(_benchmark_payload)
+                st.session_state["local_history"].record(
+                    "benchmark_suite", "Fixed reference factors", st.session_state["benchmark_result"],
+                )
+            except WorkflowError as _error:
+                st.error(f"Benchmark suite problem: {_error}")
+        _bench = st.session_state.get("benchmark_result")
+        if _bench:
+            _rows = pd.DataFrame(_bench.get("benchmarks") or [])
+            if not _rows.empty:
+                st.dataframe(_rows[["label", "annual_return", "annual_sharpe", "deflated_sharpe", "max_drawdown", "evidence_status", "data_status"]], use_container_width=True, hide_index=True,
+                             column_config={
+                                 "annual_return": st.column_config.NumberColumn("Annual return", format="%.2f%%"),
+                                 "annual_sharpe": st.column_config.NumberColumn("Annual Sharpe", format="%.2f"),
+                                 "deflated_sharpe": st.column_config.NumberColumn("Deflated Sharpe", format="%.3f"),
+                                 "max_drawdown": st.column_config.NumberColumn("Max drawdown", format="%.2f%%"),
+                             })
+            for _skip in _bench.get("skipped") or []:
+                st.warning(f"{_skip['label']}: {_skip['reason']}")
+            st.download_button("Export benchmark audit", json.dumps(_bench, indent=2), "alphaforge-fixed-benchmarks.json", "application/json", icon=":material/download:")
 
 with t_perf:
     eq = pd.DataFrame(res["equity_curve"])

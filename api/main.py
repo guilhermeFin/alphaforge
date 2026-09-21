@@ -27,9 +27,11 @@ from pydantic import BaseModel, ConfigDict, Field  # noqa: E402
 from api.service import (  # noqa: E402
     DISCLAIMER, FACTORS, PROVIDERS, WorkflowError, run_backtest_workflow,
     run_filing_event_study, run_model_comparison, run_public_data_pilot, run_real_document_batch,
-    run_portfolio_research, data_connections_status,
+    run_portfolio_research, run_benchmark_suite, data_connections_status,
     run_microstructure_lab,
 )
+from research.protocol_runner import ProtocolRunner  # noqa: E402
+from research.research_protocol import ProtocolError, ResearchProtocolStore  # noqa: E402
 from research.trial_ledger import TrialLedger  # noqa: E402
 from api.security import install_security, secure_cookies  # noqa: E402
 from api.accounts_api import (  # noqa: E402
@@ -66,6 +68,24 @@ class BacktestRequest(BaseModel):
     periods: int = Field(1512, ge=120, le=6000, description="synthetic only")
     seed: int = Field(42, description="synthetic only")
     start: str = Field("2015-01-02")
+
+
+class ProtocolCreateRequest(BaseModel):
+    """A hypothesis and fixed chronological boundaries for a protected study."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    hypothesis: str = Field(..., min_length=8, max_length=1_000)
+    research_end: str = Field(..., min_length=10, max_length=10)
+    validation_end: str = Field(..., min_length=10, max_length=10)
+    final_holdout_end: str = Field(..., min_length=10, max_length=10)
+
+
+class ProtocolRunRequest(BacktestRequest):
+    """A normal strategy request plus the named protected stage to execute."""
+
+    study_id: str = Field(..., min_length=16, max_length=64)
+    stage: str = Field(..., pattern="^(exploration|validation|final_holdout)$")
 
 
 class MLCompareRequest(BacktestRequest):
@@ -194,6 +214,7 @@ class MicrostructureRequest(BaseModel):
 # limit (memory-DoS guard); evicts the oldest when full.
 MAX_SESSIONS = 10_000
 _LEDGERS: dict[str, TrialLedger] = {}
+_PROTOCOL_STORE = ResearchProtocolStore()
 
 
 def _ledger_for_key(key: str) -> TrialLedger:
@@ -271,6 +292,47 @@ def data_connections() -> dict:
     return data_connections_status()
 
 
+@app.post("/protocols")
+def create_protocol(req: ProtocolCreateRequest) -> dict:
+    """Create an append-only study protocol before inspecting a protected stage."""
+    try:
+        return _PROTOCOL_STORE.create(req.hypothesis, {
+            "research_end": req.research_end,
+            "validation_end": req.validation_end,
+            "final_holdout_end": req.final_holdout_end,
+        })
+    except ProtocolError as error:
+        raise HTTPException(status_code=400, detail=str(error))
+
+
+@app.get("/protocols/{study_id}")
+def get_protocol(study_id: str) -> dict:
+    try:
+        return _PROTOCOL_STORE.summary(study_id)
+    except ProtocolError as error:
+        raise HTTPException(status_code=404, detail=str(error))
+
+
+@app.post("/protocols/{study_id}/run")
+def run_protocol_stage(study_id: str, req: ProtocolRunRequest, request: Request, response: Response) -> dict:
+    """Run one stage through the protocol-enforced chronological window."""
+    if study_id != req.study_id:
+        raise HTTPException(status_code=400, detail="Protocol URL and request study_id must match.")
+    ledger = _get_ledger(request, response, principal=current_principal(request))
+    payload = req.model_dump(exclude={"study_id", "stage"})
+    try:
+        result = ProtocolRunner(_PROTOCOL_STORE).run(
+            study_id, req.stage, payload,
+            lambda prepared: run_backtest_workflow(prepared, ledger=ledger),
+        )
+    except (ProtocolError, WorkflowError) as error:
+        raise HTTPException(status_code=400, detail=str(error))
+    except Exception as error:
+        raise HTTPException(status_code=500, detail=f"protocol stage failed: {type(error).__name__}: {error}")
+    _maybe_persist_run(request, "backtest", {**payload, "protocol": {"study_id": study_id, "stage": req.stage}}, result)
+    return result
+
+
 @app.post("/backtest")
 def run_backtest(req: BacktestRequest, request: Request, response: Response) -> dict:
     principal = current_principal(request)
@@ -283,6 +345,18 @@ def run_backtest(req: BacktestRequest, request: Request, response: Response) -> 
         raise HTTPException(status_code=500, detail=f"backtest failed: {type(e).__name__}: {e}")
     _maybe_persist_run(request, "backtest", req.model_dump(), result)
     return result
+
+
+@app.post("/benchmark-suite")
+def benchmark_suite(req: BacktestRequest, request: Request, response: Response) -> dict:
+    """Run the non-configurable reference-factor suite under one cost model."""
+    ledger = _get_ledger(request, response, principal=current_principal(request))
+    try:
+        return run_benchmark_suite(req.model_dump(), ledger=ledger)
+    except WorkflowError as error:
+        raise HTTPException(status_code=400, detail=str(error))
+    except Exception as error:
+        raise HTTPException(status_code=500, detail=f"benchmark suite failed: {type(error).__name__}: {error}")
 
 
 @app.post("/session/reset")

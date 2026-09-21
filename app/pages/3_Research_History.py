@@ -41,6 +41,8 @@ def _comparison_row(record: dict) -> dict:
             row["Largest company"] = summary.get("max_name_weight")
     elif record["kind"] == "coverage":
         row.update({"Companies": summary.get("companies"), "SEC observations": summary.get("sec_observations")})
+    elif record["kind"] == "benchmark_suite":
+        row.update({"Benchmarks": summary.get("benchmarks"), "Provider": summary.get("provider")})
     return row
 
 
@@ -68,6 +70,8 @@ def _overview_row(record: dict) -> dict:
         row["Summary"] = f"{summary.get('factor', detail)} | Sharpe {sharpe_label}{stability_label}"
     elif record["kind"] == "coverage":
         row["Summary"] = f"{summary.get('companies', 0)} companies | {summary.get('sec_observations', 0):,} SEC observations"
+    elif record["kind"] == "benchmark_suite":
+        row["Summary"] = f"{summary.get('benchmarks', 0)} fixed reference factors | {summary.get('provider', 'unknown provider')}"
     return row
 
 

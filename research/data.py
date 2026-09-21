@@ -127,7 +127,13 @@ def get_panel(
 ) -> Panel:
     """Stable entry point for synthetic, Yahoo, or a local licensed bundle."""
     if provider == "synthetic":
-        return make_synthetic_panel(symbols, start=start, **kwargs)
+        panel = make_synthetic_panel(symbols, start=start, **kwargs)
+        if end is None:
+            return panel
+        cutoff = pd.Timestamp(end)
+        return Panel(close=panel.close.loc[panel.close.index <= cutoff],
+                     volume=panel.volume.loc[panel.volume.index <= cutoff],
+                     regime=None if panel.regime is None else panel.regime.loc[panel.regime.index <= cutoff])
     if provider in ("yfinance", "yahoo"):
         return _yf_close_panel(symbols, start, end)
     if provider in ("licensed_bundle", "licensed"):

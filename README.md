@@ -32,6 +32,8 @@ Most backtests can produce an attractive chart. AlphaForge is built to make the 
 - **Advanced evidence is optional but auditable:** GARCH conditional-risk estimates, SPA/MCS candidate comparisons, point-in-time structural-break checks, and hierarchical risk parity use explicit historical inputs and fail safely when unavailable.
 - **Evidence has a status:** synthetic, public, and licensed data are distinguished in the result itself instead of buried in a footnote.
 - **A degenerate sample cannot look like a result:** every strategy report and event study carries a data-health read-out — effective observations, non-flat returns, cross-sectional signal dispersion, average active names, and any undefined statistics. A factor whose signal never varies across the universe produces no positions and a flat return series; that is reported as *insufficient variation for a performance claim*, not as a weak result. See [docs/research_validity.md](docs/research_validity.md).
+- **Protocols control the actual evaluation window:** a protected validation or final-holdout stage retains earlier history only for signal warm-up, then reports exclusively on its declared chronological range. The final holdout is single-use. See [docs/protocol_execution.md](docs/protocol_execution.md).
+- **Benchmarks stay benchmarks:** the fixed Value, Quality, Momentum, and Low-volatility suite uses the same dates and costs without opening a second tuning surface.
 - **Limitations stay attached:** a simulated fill remains a simulation; trade-only data is not relabeled as quote-level evidence.
 
 ### Model availability vs training-data overlap
@@ -159,6 +161,8 @@ research/
   model_time_integrity.py  scoring-model availability and training-overlap screening
   research_validity.py     data-health checks that block claims on degenerate samples
   temporal_stability.py    embargoed chronological signal-stability cohorts
+  protocol_runner.py       date-bounded protocol execution and final-holdout protection
+  benchmark_suite.py       fixed reference-factor comparison definitions
   microstructure/          trade-flow research, quote recorder, and ITCH parser
   reproducibility.py       stable data and research fingerprints
 
@@ -186,6 +190,7 @@ AlphaForge is intentionally conservative about what its data can establish.
 - Local trade data does not establish order-book depth, queue position, or realized limit-order fills.
 - Indicative or delayed options data supports mathematical diagnostics, not execution-quality options research.
 - Backtests and simulations are hypothetical and do not place orders or recommend investments.
+- A real-market claim requires a licensed bundle with corporate-action-adjusted prices, historical membership, delisted securities, and as-reported fundamentals. The completion checklist is in [docs/protocol_execution.md](docs/protocol_execution.md).
 
 ## Testing
 
